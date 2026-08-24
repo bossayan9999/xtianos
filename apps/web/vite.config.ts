@@ -6,6 +6,8 @@ const API_TARGET = 'http://localhost:3101'
 export default defineConfig({
   plugins: [react()],
   server: {
+    port: 5174,
+    strictPort: true,
     proxy: {
       '/api': API_TARGET,
       '/health': API_TARGET,
