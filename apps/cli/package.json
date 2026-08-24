@@ -1,0 +1,9 @@
+{
+  "name": "@xtiand/cli",
+  "version": "0.1.0",
+  "description": "xos — xtiandOS terminal companion",
+  "bin": {
+    "xos": "bin/xos.mjs"
+  },
+  "license": "ISC"
+}

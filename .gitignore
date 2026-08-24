@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.db
+*.db-journal
+.env
+.tmp/
+.vite/
+*.tsbuildinfo
+generated/
+artifacts/*
+!artifacts/.gitkeep
+vault/**
+!vault/BRAIN/Sessions/.gitkeep
+skills-installed/

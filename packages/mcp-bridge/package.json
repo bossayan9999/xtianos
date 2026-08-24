@@ -1,0 +1,7 @@
+{
+  "name": "@xtiand/mcp-bridge",
+  "version": "0.1.0",
+  "description": "Minimal MCP stdio client bridge for xtiandOS",
+  "main": "src/index.ts",
+  "license": "ISC"
+}

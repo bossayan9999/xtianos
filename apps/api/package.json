@@ -1,0 +1,31 @@
+{
+  "name": "@xtiand/api",
+  "version": "0.1.0",
+  "description": "xtiandOS backend API",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "db:push": "prisma db push",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/core.test.ts"
+  },
+  "keywords": [],
+  "license": "ISC",
+  "dependencies": {
+    "@prisma/adapter-better-sqlite3": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "@xtiand/mjane-core": "*",
+    "@xtiand/shared": "*",
+    "better-sqlite3": "^12.4.1",
+    "dockerode": "^4.0.2",
+    "dotenv": "^17.2.1",
+    "express": "^4.21.2",
+    "prisma": "^7.9.1"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.31",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.13.3"
+  }
+}

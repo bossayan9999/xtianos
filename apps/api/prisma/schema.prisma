@@ -1,0 +1,112 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Provider {
+  id        Int      @id @default(autoincrement())
+  label     String
+  kind      String
+  baseUrl   String
+  apiKeyEnc String?
+  createdAt DateTime @default(now())
+}
+
+model Conversation {
+  id        Int       @id @default(autoincrement())
+  title     String    @default("New conversation")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  messages  Message[]
+}
+
+model Message {
+  id             Int          @id @default(autoincrement())
+  conversationId Int
+  role           String
+  content        String
+  toolCallsJson  String?
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model Project {
+  id        Int         @id @default(autoincrement())
+  name      String
+  goal      String?
+  status    String      @default("active")
+  createdAt DateTime    @default(now())
+  tasks     Task[]
+}
+
+model Task {
+  id         Int      @id @default(autoincrement())
+  projectId  Int?
+  title      String
+  status     String   @default("inbox")
+  notes      String?
+  position   Int      @default(0)
+  createdAt  DateTime @default(now())
+  project    Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+}
+
+model Skill {
+  id          Int      @id @default(autoincrement())
+  dirName     String   @unique
+  name        String
+  description String
+  enabled     Boolean  @default(false)
+  source      String   @default("local")
+  createdAt   DateTime @default(now())
+}
+
+model Artifact {
+  id             Int      @id @default(autoincrement())
+  conversationId Int?
+  kind           String   @default("other")
+  filename       String
+  mime           String   @default("text/plain")
+  contentBase64  String?
+  textPreview    String?
+  createdAt      DateTime @default(now())
+}
+
+model McpServer {
+  id        Int     @id @default(autoincrement())
+  name      String
+  command   String
+  args      String  @default("")
+  envJson   String  @default("{}")
+  enabled   Boolean @default(false)
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  action    String
+  detail    String
+  createdAt DateTime @default(now())
+}
+
+model MemoryChunk {
+  id            Int      @id @default(autoincrement())
+  source        String
+  path          String?
+  chunkIndex    Int      @default(0)
+  content       String
+  embeddingJson String
+  createdAt     DateTime @default(now())
+
+  @@index([source])
+}
+
+model Setting {
+  key   String @id
+  value String
+}

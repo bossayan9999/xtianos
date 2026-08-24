@@ -1,0 +1,34 @@
+{
+  "name": "xtiand-os",
+  "version": "0.1.0",
+  "description": "xtiandOS — agentic home-lab web OS with the mjane copilot",
+  "private": true,
+  "type": "commonjs",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w apps/api",
+    "dev:web": "npm run dev -w apps/web",
+    "build": "npm run build -w packages/shared && npm run build -w packages/mjane-core && npm run build -w apps/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:push": "npm run db:push -w apps/api"
+  },
+  "keywords": ["ai", "agent", "copilot", "homelab"],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "tsx": "^4.20.3",
+    "typescript": "~6.0.2"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "prisma@7.9.1": true,
+    "@prisma/engines@7.9.1": true,
+    "esbuild@0.28.2": true
+  }
+}
