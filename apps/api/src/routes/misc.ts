@@ -81,14 +81,23 @@ execRouter.post("/", async (req, res): Promise<void> => {
     res.status(400).json({ error: "command and confirmed=true required" });
     return;
   }
-  if (/\b(rm\s+-rf\s+[/~]|mkfs|dd\s+if=|:\(\)\s*\{)/.test(command)) {
+  if (
+    /\b(rm\s+-rf\s+[/~]|mkfs|dd\s+if=|:\(\)\s*\{)/.test(command) ||
+    /\b(Remove-Item\s+.*-Recurse|Format-Volume|diskpart)\b/i.test(command)
+  ) {
     await audit("exec:blocked", command);
     res.status(403).json({ error: "destructive pattern blocked" });
     return;
   }
   await audit("exec", command);
   const { spawn } = await import("node:child_process");
-  const child = spawn("bash", ["-lc", command], { cwd: env.workspaceDir, timeout: 30_000 });
+  const isWindows = process.platform === "win32";
+  const child = isWindows
+    ? spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+        cwd: env.workspaceDir,
+        timeout: 30_000,
+      })
+    : spawn("bash", ["-lc", command], { cwd: env.workspaceDir, timeout: 30_000 });
   let out = "";
   child.stdout.on("data", (c: Buffer) => { out += c.toString(); });
   child.stderr.on("data", (c: Buffer) => { out += c.toString(); });

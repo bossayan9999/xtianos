@@ -12,6 +12,14 @@ interface ProviderRow {
   hasKey: boolean
 }
 
+const PROVIDER_PRESETS: { label: string; kind: ProviderKind; baseUrl: string }[] = [
+  { label: 'OpenAI', kind: 'openai-compat', baseUrl: 'https://api.openai.com/v1' },
+  { label: 'Anthropic', kind: 'anthropic', baseUrl: 'https://api.anthropic.com/v1' },
+  { label: 'OpenRouter', kind: 'openai-compat', baseUrl: 'https://openrouter.ai/api/v1' },
+  { label: 'OpenCode Zen', kind: 'openai-compat', baseUrl: 'https://opencode.ai/zen/v1' },
+  { label: 'Ollama (local)', kind: 'openai-compat', baseUrl: 'http://localhost:11434/v1' },
+]
+
 export function SettingsPage() {
   const [providers, setProviders] = useState<ProviderRow[]>([])
   const [label, setLabel] = useState('')
@@ -61,6 +69,22 @@ export function SettingsPage() {
       <section className="panel">
         <h2>AI providers</h2>
         <p className="hint">Keys are AES-256-GCM encrypted with the server master secret; never sent back to the browser.</p>
+        <div className="provider-presets">
+          {PROVIDER_PRESETS.map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              className="chip chip--preset"
+              onClick={() => {
+                setLabel(preset.label)
+                setKind(preset.kind)
+                setBaseUrl(preset.baseUrl)
+              }}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
         <div className="provider-form">
           <input placeholder="label e.g. OpenAI" value={label} onChange={(e) => setLabel(e.target.value)} />
           <select value={kind} onChange={(e) => setKind(e.target.value as ProviderKind)}>
