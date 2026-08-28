@@ -104,12 +104,21 @@ export interface Artifact {
   createdAt: string;
 }
 
+export type McpTransport = "stdio" | "http" | "sse";
+
 export interface McpServerConfig {
   id: number;
   name: string;
+  transport?: McpTransport;
   command: string;
   args: string;
   envJson: string;
+  /** Remote endpoint URL for http/sse transports */
+  url?: string;
+  /** JSON map of extra headers to send (e.g. auth) */
+  headersJson?: string;
+  /** OAuth connection state for remote servers: unlinked | linking | linked */
+  oauth?: "none" | "linking" | "linked";
   enabled: boolean;
 }
 
@@ -119,6 +128,30 @@ export interface AuditEntry {
   detail: string;
   createdAt: string;
 }
+
+export interface McpResourceInfo {
+  uri: string;
+  name?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface McpPromptInfo {
+  name: string;
+  description?: string;
+  arguments?: { name: string; description?: string; required?: boolean }[];
+}
+
+export interface McpToolInfo {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+}
+
+export type McpServerStatsCaps =
+  | { kind: "tools"; items: McpToolInfo[] }
+  | { kind: "resources"; items: McpResourceInfo[] }
+  | { kind: "prompts"; items: McpPromptInfo[] };
 
 export interface AgentStepEvent {
   type: "status" | "token" | "tool-start" | "tool-end" | "message" | "error" | "done";

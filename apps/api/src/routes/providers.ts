@@ -86,7 +86,16 @@ providersRouter.get("/models/catalog", async (req, res): Promise<void> => {
       )
     : models;
   const seen = new Set<string>();
-  res.json(filtered.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true))).slice(0, 60));
+  // When no query, prioritize static starter catalog (NVIDIA, OpenCode, etc.) before live provider models
+  const deduped = filtered.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
+  if (!query) {
+    const starters = starterCatalog().map((s) => s.id);
+    const staticModels = deduped.filter((m) => starters.includes(m.id));
+    const liveModels = deduped.filter((m) => !starters.includes(m.id));
+    res.json([...staticModels, ...liveModels].slice(0, 80));
+  } else {
+    res.json(deduped.slice(0, 80));
+  }
 });
 
 providersRouter.get("/default-model", async (_req: Request, res: Response): Promise<void> => {

@@ -27,7 +27,7 @@ export function hashEmbed(text: string): number[] {
   return vector.map((v) => v / norm);
 }
 
-export function cosine(a: number[], b: number[]): number {
+export function cosine(a: ArrayLike<number>, b: ArrayLike<number>): number {
   let dot = 0;
   const len = Math.min(a.length, b.length);
   for (let i = 0; i < len; i += 1) dot += a[i] * b[i];

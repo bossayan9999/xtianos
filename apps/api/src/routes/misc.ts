@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 
 import { prisma } from "../lib/db";
-import { audit } from "../lib/auth";
+import { audit, AuthedRequest, authorizeRequestAccess } from "../lib/auth";
 import { env } from "../lib/env";
 import {
   dockerAvailable,
@@ -10,10 +10,12 @@ import {
   dockerStop,
   listContainers,
 } from "../services/docker-service";
+import { loadImageConfig, saveImageConfig, generateImage, type ImageConfig } from "../services/image-service";
 
 export const dockerRouter = Router();
 export const artifactsRouter = Router();
 export const auditRouter = Router();
+export const imageConfigRouter = Router();
 
 dockerRouter.get("/status", async (_req, res): Promise<void> => {
   res.json({ available: await dockerAvailable() });
@@ -58,6 +60,11 @@ artifactsRouter.get("/", async (_req, res): Promise<void> => {
 });
 
 artifactsRouter.get("/:id/raw", async (req, res): Promise<void> => {
+  const authed = req as AuthedRequest;
+  if (!(await authorizeRequestAccess(authed))) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
   const id = Number.parseInt(String(req.params["id"]), 10);
   const artifact = await prisma.artifact.findUnique({ where: { id } }).catch(() => null);
   if (!artifact) {
@@ -81,12 +88,22 @@ execRouter.post("/", async (req, res): Promise<void> => {
     res.status(400).json({ error: "command and confirmed=true required" });
     return;
   }
-  if (
-    /\b(rm\s+-rf\s+[/~]|mkfs|dd\s+if=|:\(\)\s*\{)/.test(command) ||
-    /\b(Remove-Item\s+.*-Recurse|Format-Volume|diskpart)\b/i.test(command)
-  ) {
+  if (command.length > 2000) {
+    await audit("exec:blocked", "command too long");
+    res.status(400).json({ error: "command exceeds 2000 characters" });
+    return;
+  }
+  const blockedPatterns = [
+    /\b(rm\s+-rf\s+[/~]|mkfs|dd\s+if=|:\(\)\s*\{)/,
+    /\b(Remove-Item\s+.*-Recurse|Format-Volume|diskpart)\b/i,
+    /-EncodedCommand/i,
+    /\b(IEX|Invoke-Expression|Invoke-RestMethod|Invoke-WebRequest|Start-Process|curl|wget|irm|iwr)\b/i,
+    /\b(net\s+user|net\s+localgroup|reg\s+add|sc\s+create|schtasks|shutdown|restart-computer)\b/i,
+    /([\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff])/,
+  ];
+  if (blockedPatterns.some((p) => p.test(command))) {
     await audit("exec:blocked", command);
-    res.status(403).json({ error: "destructive pattern blocked" });
+    res.status(403).json({ error: "blocked command pattern (see exec:blocked audit entry)" });
     return;
   }
   await audit("exec", command);
@@ -109,3 +126,51 @@ auditRouter.get("/", async (_req, res): Promise<void> => {
   const rows = await prisma.auditLog.findMany({ orderBy: { id: "desc" }, take: 100 });
   res.json(rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() })));
 });
+
+const MASK = (key: string): string =>
+  key.length <= 8 ? (key ? "••••" : "") : `${key.slice(0, 4)}••••${key.slice(-4)}`;
+
+/** GET /api/image-config — current image provider config (apiKey masked). */
+imageConfigRouter.get("/", async (_req: Request, res: Response): Promise<void> => {
+  const cfg = await loadImageConfig();
+  res.json({ ...cfg, apiKey: MASK(cfg.apiKey), hasKey: Boolean(cfg.apiKey) });
+});
+
+/** PUT /api/image-config — save image provider config. apiKey may be full (replaces) or masked (keeps). */
+imageConfigRouter.put("/", async (req: Request, res: Response): Promise<void> => {
+  const incoming = (req.body ?? {}) as Partial<ImageConfig>;
+  const current = await loadImageConfig();
+  let apiKey = String(incoming.apiKey ?? "").trim();
+  // Preserve the stored key when the client round-trips an unchanged/masked value
+  // (masked literals like "sk-a••••WXYZ" must not be persisted as the real key).
+  if (apiKey.includes("••") || apiKey === current.apiKey || (current.apiKey && apiKey === MASK(current.apiKey))) {
+    apiKey = current.apiKey;
+  }
+  apiKey = apiKey.replace(/^Bearer\s+/i, "").trim();
+  const cfg: ImageConfig = {
+    provider: (["openai", "flux", "stable", "nvidia"].includes(incoming.provider as string)
+      ? incoming.provider
+      : current.provider) as ImageConfig["provider"],
+    apiKey,
+    model: String(incoming.model ?? current.model),
+    baseUrl: String(incoming.baseUrl ?? current.baseUrl),
+  };
+  if (!cfg.apiKey) return void res.status(400).json({ error: "apiKey is required" });
+  await saveImageConfig(cfg);
+  await audit("config:image", `provider=${cfg.provider} model=${cfg.model}`);
+  res.json({ ...cfg, apiKey: MASK(cfg.apiKey), hasKey: true });
+});
+
+/** POST /api/image-config/test — generate a tiny image to validate the configured key/backend. */
+imageConfigRouter.post("/test", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const cfg = await loadImageConfig();
+    const img = await generateImage(cfg, { prompt: "a single red circle on white background", size: "256x256", quality: "low", style: "vivid" });
+    await audit("image:test", `provider=${cfg.provider} ok ${img.format}`);
+    res.json({ ok: true, mime: img.mime, format: img.format, bytes: img.base64.length });
+  } catch (error: unknown) {
+    await audit("image:test", `failed ${error instanceof Error ? error.message : String(error)}`);
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+

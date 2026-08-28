@@ -2,18 +2,23 @@ import path from "node:path";
 
 import express from "express";
 
-import { authMiddleware, audit } from "./lib/auth";
+import { authMiddleware, audit, bootstrapAdmin } from "./lib/auth";
 import { env } from "./lib/env";
 import { prisma } from "./lib/db";
+import { authRouter } from "./routes/auth";
 import { chatRouter } from "./routes/chat";
 import { providersRouter } from "./routes/providers";
 import { brainRouter } from "./routes/brain";
 import { projectsRouter, tasksRouter } from "./routes/projects";
 import { skillsRouter } from "./routes/skills";
-import { artifactsRouter, auditRouter, dockerRouter, execRouter } from "./routes/misc";
+import { artifactsRouter, auditRouter, dockerRouter, execRouter, imageConfigRouter } from "./routes/misc";
 import { mcpRouter, memoryRouter } from "./routes/mcp";
 import { voiceRouter } from "./routes/voice";
+import { tunnelRouter } from "./routes/tunnel";
+import { agentsRouter } from "./routes/agents";
+import { housekeepingRouter } from "./routes/housekeeping";
 import { ensureSkillsRoot } from "./services/agent-service";
+import { startHousekeeper } from "./services/housekeeper";
 import { promises as fsp, existsSync } from "node:fs";
 
 const app = express();
@@ -26,6 +31,8 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", app: "xtiandOS", timestamp: new Date().toISOString() });
 });
 
+app.use("/api/auth", authRouter);
+
 app.use("/api/chat", chatRouter);
 app.use("/api/providers", providersRouter);
 app.use("/api/brain", brainRouter);
@@ -36,9 +43,36 @@ app.use("/api/docker", dockerRouter);
 app.use("/api/exec", execRouter);
 app.use("/api/artifacts", artifactsRouter);
 app.use("/api/audit", auditRouter);
+app.use("/api/image-config", imageConfigRouter);
 app.use("/api/mcp", mcpRouter);
 app.use("/api/memory", memoryRouter);
 app.use("/api/voice", voiceRouter);
+app.use("/api/tunnel", tunnelRouter);
+app.use("/api/agents", agentsRouter);
+app.use("/api/housekeeping", housekeepingRouter);
+
+// Global error handler — catches synchronous throws and (via asyncWrapper) rejected async handlers.
+app.use(
+  (
+    error: unknown,
+    _req: express.Request,
+    res: express.Response,
+    _next: express.NextFunction,
+  ): void => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("unhandled route error:", error);
+    if (res.headersSent) return; // stream already started; nothing safe to send
+    void audit("server:error", message.slice(0, 500));
+    res.status(500).json({ error: message || "Internal server error" });
+  },
+);
+
+process.on("unhandledRejection", (reason) => {
+  // Safety net: a rejected async route handler must not take down the whole server.
+  const message = reason instanceof Error ? reason.stack ?? reason.message : String(reason);
+  console.error("unhandledRejection:", message);
+  void audit("server:unhandledRejection", message.slice(0, 500)).catch(() => undefined);
+});
 
 async function bootstrap(): Promise<void> {
   await fsp.mkdir(env.vaultPath, { recursive: true });
@@ -52,6 +86,22 @@ async function bootstrap(): Promise<void> {
   }
   await ensureSkillsRoot();
   await ensureBrainFolders();
+  await bootstrapAdmin();
+  await startHousekeeper();
+
+  // Security posture notes at boot.
+  if (env.authToken === "") {
+    console.warn("⚠️  AUTH_TOKEN is empty — API is unauthenticated. Set AUTH_TOKEN in .env before exposing beyond localhost.");
+    void audit("security:warning", "AUTH_TOKEN empty (unauthenticated API)");
+  }
+  if (env.bind !== "127.0.0.1" && env.bind !== "localhost") {
+    console.warn(`⚠️  API bound to ${env.bind} — network-accessible. Ensure auth is enabled.`);
+    void audit("security:warning", `API bound to ${env.bind}${env.authToken === "" ? " WITHOUT auth token" : ""}`);
+  }
+  if (env.smtpHost === "") {
+    console.warn("⚠️  SMTP_HOST is unset — email password recovery is disabled. Set SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS in .env to enable it.");
+    void audit("security:warning", "SMTP not configured (email recovery disabled)");
+  }
 
   async function ensureBrainFolders(): Promise<void> {
     const identityDir = path.join(env.vaultPath, "BRAIN", "identity");
@@ -86,6 +136,82 @@ async function bootstrap(): Promise<void> {
     const existing = await prisma.provider.findFirst({ where: { baseUrl: seed.baseUrl } });
     if (!existing) {
       await prisma.provider.create({ data: { ...seed, apiKeyEnc: null } });
+    }
+  }
+
+  // Seed default agents
+  const seedAgents = [
+    {
+      name: "mjane",
+      displayName: "mjane",
+      description: "General orchestrator — decomposes goals, delegates to sub-agents, synthesizes results",
+      personality: "Warm, sharp, a little playful. The conductor of the agent orchestra.",
+      systemPromptAdd: "You are the general. Delegate tasks to your sub-agents using delegate_task. Use list_agents to see available agents. Decompose complex goals into subtasks.",
+      toolsAllowed: "*",
+      color: "#57d9a3",
+      icon: "✨",
+      orbitRadius: 0,
+      orbitAngle: 0,
+      isGeneral: true,
+    },
+    {
+      name: "researcher",
+      displayName: "Researcher",
+      description: "Web research, memory recall, information gathering, and analysis",
+      personality: "Thorough, curious, methodical. Always cites sources.",
+      systemPromptAdd: "You are a research specialist. Use web_search, web_fetch, brain_search, memory_search, and brain_read to gather information. Always cite your sources.",
+      toolsAllowed: "web_search,web_fetch,brain_search,brain_read,memory_search",
+      color: "#7aa2f7",
+      icon: "🔍",
+      orbitRadius: 140,
+      orbitAngle: 0,
+      isGeneral: false,
+    },
+    {
+      name: "coder",
+      displayName: "Coder",
+      description: "Code writing, file operations, workspace tasks, and scripting",
+      personality: "Precise, efficient, pragmatic. Writes clean code.",
+      systemPromptAdd: "You are a coding specialist. Use brain_write, workspace_write, shell_exec, and file tools to implement solutions. Verify your work.",
+      toolsAllowed: "brain_write,workspace_write,shell_exec",
+      color: "#e0af68",
+      icon: "💻",
+      orbitRadius: 140,
+      orbitAngle: 120,
+      isGeneral: false,
+    },
+    {
+      name: "ops",
+      displayName: "Ops",
+      description: "System operations, process management, Docker, and infrastructure",
+      personality: "Cautious, systematic, safety-first. Confirms before destructive actions.",
+      systemPromptAdd: "You are an ops specialist. Use process_exec, process_list, shell_exec, dashboard_hosts, dashboard_alerts for system operations. Always explain what a command will do before running it.",
+      toolsAllowed: "process_exec,process_list,shell_exec,dashboard_hosts,dashboard_alerts",
+      color: "#f7768e",
+      icon: "⚙️",
+      orbitRadius: 140,
+      orbitAngle: 240,
+      isGeneral: false,
+    },
+    {
+      name: "creative",
+      displayName: "Creative",
+      description: "Image generation, SVG creation, visual design, and studio content",
+      personality: "Imaginative, detail-oriented, visually creative.",
+      systemPromptAdd: "You are a creative specialist. For real photos/renders/paintings use image_generate (pluggable backends: DALL·E, Flux, Stable Diffusion, NVIDIA NIM) — NOT SVG. For diagrams/charts/precise text layouts use SVG. Save images with artifact_save or via image_generate. Use workspace_write for code and creative files.",
+      toolsAllowed: "workspace_write,artifact_save,brain_write,image_generate,image_read",
+      color: "#bb9af7",
+      icon: "🎨",
+      orbitRadius: 140,
+      orbitAngle: 60,
+      isGeneral: false,
+    },
+  ];
+
+  for (const seed of seedAgents) {
+    const existing = await prisma.agent.findFirst({ where: { name: seed.name } });
+    if (!existing) {
+      await prisma.agent.create({ data: seed });
     }
   }
 

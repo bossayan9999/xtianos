@@ -83,6 +83,35 @@ brainRouter.delete("/file", async (req, res): Promise<void> => {
   res.json({ ok: true });
 });
 
+/** Move/rename a vault file (used by the organizer + manual tidy-up). */
+brainRouter.post("/move", async (req, res): Promise<void> => {
+  const from = typeof req.body?.["from"] === "string" ? req.body["from"] : "";
+  const to = typeof req.body?.["to"] === "string" ? req.body["to"] : "";
+  if (from.length === 0 || to.length === 0) {
+    res.status(400).json({ error: "from and to required" });
+    return;
+  }
+  const src = insideVault(from);
+  const dst = insideVault(to);
+  if (src === dst) {
+    res.status(400).json({ error: "from and to are the same path" });
+    return;
+  }
+  if ((await fs.stat(src).catch(() => null)) === null) {
+    res.status(404).json({ error: `not found: ${from}` });
+    return;
+  }
+  try {
+    await fs.mkdir(path.dirname(dst), { recursive: true });
+    await fs.rename(src, dst);
+    await audit("brain:move", `${from} -> ${to}`);
+    void reindexVault(env.vaultPath).catch(() => undefined);
+    res.json({ ok: true });
+  } catch (error: unknown) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 /** Clean report: orphans (unlinked), oversized notes, stale notes. */
 brainRouter.get("/clean-report", async (_req, res): Promise<void> => {
   const files: string[] = [];

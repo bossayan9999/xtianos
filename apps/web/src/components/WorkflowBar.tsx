@@ -5,7 +5,8 @@ export type ChatMode = 'chat' | 'plan' | 'build'
 const STAGES = [
   { key: 'memory', label: 'Memory RAG', hint: 'recalling context' },
   { key: 'plan', label: 'Plan', hint: 'thinking' },
-  { key: 'tools', label: 'Tools', hint: 'acting' },
+  { key: 'delegate', label: 'Delegate', hint: 'assigning to agents' },
+  { key: 'tools', label: 'Tools', hint: 'agents working' },
   { key: 'synthesize', label: 'Synthesize', hint: 'writing answer' },
 ]
 
@@ -39,9 +40,10 @@ export function WorkflowBar({ mode, onModeChange, running, activeStage, toolCoun
   }, [running])
 
   const activeIndex = (() => {
-    if (activeStage === 'tools') return 2
+    if (activeStage === 'tools') return 3
+    if (activeStage === 'delegate') return 2
     if (activeStage === 'plan') return 1
-    if (activeStage === 'message') return 3
+    if (activeStage === 'message') return 4
     if (running) return 0
     return -1
   })()

@@ -3,6 +3,7 @@ import type { ProviderKind } from '@xtiand/shared'
 
 import { api } from '../lib/api'
 import { ModelPicker } from '../components/ModelPicker'
+import { AccountSecurity } from '../components/AccountSecurity'
 
 interface ProviderRow {
   id: number
@@ -20,6 +21,21 @@ const PROVIDER_PRESETS: { label: string; kind: ProviderKind; baseUrl: string }[]
   { label: 'Ollama (local)', kind: 'openai-compat', baseUrl: 'http://localhost:11434/v1' },
 ]
 
+interface ImageCfg {
+  provider: 'openai' | 'flux' | 'stable' | 'nvidia'
+  apiKey: string
+  model: string
+  baseUrl: string
+  hasKey: boolean
+}
+
+const IMAGE_PROVIDERS: { value: ImageCfg['provider']; label: string }[] = [
+  { value: 'nvidia', label: 'NVIDIA NIM' },
+  { value: 'openai', label: 'OpenAI DALL·E / gpt-image' },
+  { value: 'flux', label: 'Flux' },
+  { value: 'stable', label: 'Stable Diffusion' },
+]
+
 export function SettingsPage() {
   const [providers, setProviders] = useState<ProviderRow[]>([])
   const [label, setLabel] = useState('')
@@ -29,11 +45,38 @@ export function SettingsPage() {
   const [status, setStatus] = useState('')
   const [, forceTick] = useState(0)
 
+  const [imgCfg, setImgCfg] = useState<ImageCfg | null>(null)
+  const [imgKey, setImgKey] = useState('')
+  const [imgTest, setImgTest] = useState('')
+
   const load = (): void => {
     api.get<ProviderRow[]>('/api/providers').then(setProviders).catch(() => undefined)
   }
 
   useEffect(load, [])
+  useEffect(() => {
+    api.get<ImageCfg>('/api/image-config').then((c) => setImgCfg(c)).catch(() => undefined)
+  }, [])
+
+  const saveImageCfg = async (): Promise<void> => {
+    if (!imgCfg) return
+    const next: ImageCfg = { ...imgCfg, apiKey: imgKey || imgCfg.apiKey }
+    const saved = await api.put<ImageCfg>('/api/image-config', next)
+    setImgCfg(saved)
+    setImgKey('')
+    setStatus(`image generation → ${saved.provider} (${saved.model})`)
+  }
+
+  const testImageCfg = async (): Promise<void> => {
+    if (!imgCfg?.hasKey) return setImgTest('no image key yet — save config first')
+    setImgTest('generating a tiny test image…')
+    try {
+      const r = await api.post<{ ok: boolean; error?: string; format?: string }>('/api/image-config/test')
+      setImgTest(r.ok ? `ok — generated ${r.format} test image (key works!)` : `failed: ${r.error}`)
+    } catch (e: unknown) {
+      setImgTest(`failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
 
   const addProvider = async (): Promise<void> => {
     if (!label.trim() || !baseUrl.trim()) return
@@ -125,6 +168,66 @@ export function SettingsPage() {
           {providers.length === 0 && <li className="hint">No providers yet — add one to bring mjane online.</li>}
         </ul>
       </section>
+
+      {/* Image generation config */}
+      <section className="panel">
+        <h2>Image generation</h2>
+        <p className="hint">
+          Backend for <code>image_generate</code> (real photorealistic images). The creative agent and mjane can use it,
+          and can also <em>view</em> images via <code>image_read</code> when the model supports vision.
+        </p>
+        {imgCfg ? (
+          <div className="provider-form provider-form--col">
+            <select
+              value={imgCfg.provider}
+              onChange={(e) =>
+                setImgCfg({
+                  ...imgCfg,
+                  provider: e.target.value as ImageCfg['provider'],
+                  model: '',
+                  baseUrl: '',
+                })
+              }
+            >
+              {IMAGE_PROVIDERS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            <input
+              placeholder="API key"
+              type="password"
+              value={imgKey}
+              onChange={(e) => setImgKey(e.target.value)}
+            />
+            {imgCfg.hasKey && <span className="chip chip--sev-info">key saved (••••)</span>}
+            <input
+              placeholder="model (leave blank for default)"
+              value={imgCfg.model}
+              onChange={(e) => setImgCfg({ ...imgCfg, model: e.target.value })}
+            />
+            <input
+              placeholder="base url (leave blank for default)"
+              value={imgCfg.baseUrl}
+              onChange={(e) => setImgCfg({ ...imgCfg, baseUrl: e.target.value })}
+            />
+            <div className="row gap">
+              <button type="button" onClick={() => void saveImageCfg()}>
+                Save image config
+              </button>
+              <button type="button" className="chip" onClick={() => void testImageCfg()}>
+                Test backend
+              </button>
+            </div>
+            {imgTest && <p className="mono status">{imgTest}</p>}
+          </div>
+        ) : (
+          <p className="hint">loading…</p>
+        )}
+      </section>
+
+      <AccountSecurity />
 
       <section className="panel">
         <h2>Audit log</h2>

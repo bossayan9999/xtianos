@@ -79,12 +79,15 @@ model Artifact {
 }
 
 model McpServer {
-  id        Int     @id @default(autoincrement())
-  name      String
-  command   String
-  args      String  @default("")
-  envJson   String  @default("{}")
-  enabled   Boolean @default(false)
+  id          Int     @id @default(autoincrement())
+  name        String
+  transport   String  @default("stdio")
+  command     String
+  args        String  @default("")
+  envJson     String  @default("{}")
+  url         String  @default("")
+  headersJson String  @default("{}")
+  enabled     Boolean @default(false)
 }
 
 model AuditLog {
@@ -106,7 +109,74 @@ model MemoryChunk {
   @@index([source])
 }
 
+model Agent {
+  id              Int      @id @default(autoincrement())
+  name            String   @unique
+  displayName     String
+  description     String
+  personality     String   @default("")
+  systemPromptAdd String   @default("")
+  toolsAllowed    String   @default("*")
+  providerId      Int?
+  model           String?
+  apiKeyEnc       String?
+  color           String   @default("#57d9a3")
+  icon            String   @default("🤖")
+  orbitRadius     Int      @default(120)
+  orbitAngle      Float    @default(0)
+  status          String   @default("idle")
+  isGeneral       Boolean  @default(false)
+  enabled         Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
 model Setting {
   key   String @id
   value String
+}
+
+model User {
+  id             Int             @id @default(autoincrement())
+  username       String          @unique
+  passwordHash   String
+  displayName    String          @default("admin")
+  role           String          @default("admin")
+  email          String?         @unique
+  phone          String?
+  totpSecret     String?
+  totpEnabled    Boolean         @default(false)
+  failedAttempts Int             @default(0)
+  lockedUntil    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  sessions       Session[]
+  recoveryTokens RecoveryToken[]
+}
+
+model Session {
+  id         String    @id
+  userId     Int
+  tokenHash  String    @unique
+  createdIp  String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime  @default(now())
+  expiresAt  DateTime
+  revoked    Boolean   @default(false)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model RecoveryToken {
+  id        String    @id @default(uuid())
+  userId    Int
+  tokenHash String    @unique
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }

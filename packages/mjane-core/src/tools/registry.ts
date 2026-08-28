@@ -40,9 +40,26 @@ export class ToolRegistry {
       if (value === undefined || value === null || value === "") {
         return `ERROR missing required parameter: ${param.name}`;
       }
-      const expected = param.type === "number" ? "number" : typeof value;
-      if (expected !== param.type && !(param.type === "string" && typeof value === "string")) {
-        return `ERROR parameter ${param.name} must be ${param.type}`;
+      const valueType = typeof value;
+      if (param.type === "number") {
+        // accept numbers plus numeric strings (common when models emit {"n":"3"});
+        // coerce strings to numbers so downstream handlers get a real number.
+        if (valueType === "number") continue;
+        if (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value))) {
+          args[param.name] = Number(value);
+          continue;
+        }
+        return `ERROR parameter ${param.name} must be a number`;
+      }
+      if (param.type === "boolean") {
+        if (valueType === "boolean" || value === "true" || value === "false") {
+          if (valueType === "string") args[param.name] = value === "true";
+          continue;
+        }
+        return `ERROR parameter ${param.name} must be a boolean`;
+      }
+      if (param.type === "string" && valueType !== "string") {
+        return `ERROR parameter ${param.name} must be a string`;
       }
     }
     try {

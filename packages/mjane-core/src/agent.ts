@@ -17,6 +17,8 @@ export interface AgentLoopInput {
   maxTurns?: number;
   maxToolCalls?: number;
   onStep: (event: { type: string; data: unknown }) => void;
+  /** Called with each streamed text delta so the UI can render tokens live. */
+  onToken?: (delta: string) => void;
 }
 
 export interface AgentLoopResult {
@@ -38,6 +40,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
   let lastCallSignature = "";
 
   for (; turns < maxTurns; turns += 1) {
+    // Reset each turn so a repeat check only guards against the single last
+    // call of the previous turn — not whichever parallel call finished last.
+    lastCallSignature = "";
     input.onStep({ type: "status", data: `thinking (turn ${turns + 1}/${maxTurns})` });
     const reply = await providerChat({
       kind: input.provider.kind,
@@ -46,6 +51,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       model: input.provider.model,
       messages,
       tools: input.registry.list(),
+      onToken: input.onToken
+        ? (delta) => input.onStep({ type: "token", data: delta })
+        : undefined,
     });
 
     messages.push({
@@ -79,30 +87,77 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       break;
     }
 
-    for (const call of reply.toolCalls) {
-      const tool = input.registry.get(call.name);
-      const scopes = tool ? tool.scopes.join(",") : "unknown";
-      input.onStep({
-        type: "tool-start",
-        data: { id: call.id, name: call.name, argsJson: call.argsJson, scopes },
-      });
-      toolCallsUsed += 1;
+    // Execute all tool calls from this turn. Independent calls run in PARALLEL
+    // (Promise.all) so delegating to multiple agents or running several tools
+    // at once happens concurrently instead of one-at-a-time.
+    const pendingImages: string[] = [];
+    const runCtx: ToolContext = { ...input.ctx, attachImage: (dataUrl) => pendingImages.push(dataUrl) };
+
+    const seenInTurn = new Set<string>();
+    const entries = reply.toolCalls.map((call) => {
       const signature = `${call.name}:${call.argsJson}`;
-      let result: string;
-      if (signature === lastCallSignature) {
-        result =
+      let blocked = "";
+      if (signature === lastCallSignature || seenInTurn.has(signature)) {
+        blocked =
           "ERROR duplicate call — you already ran this exact call with the same arguments. Use the earlier result instead of repeating yourself.";
-      } else if (toolCallsUsed > maxToolCalls) {
-        result = "ERROR tool-call budget exhausted — answer now with what you have.";
+      } else if (toolCallsUsed + seenInTurn.size >= maxToolCalls) {
+        blocked = "ERROR tool-call budget exhausted — answer now with what you have.";
       } else {
-        result = await input.registry.execute(call.name, call.argsJson, input.ctx);
-        lastCallSignature = signature;
+        seenInTurn.add(signature);
       }
-      input.onStep({
-        type: "tool-end",
-        data: { id: call.id, name: call.name, result: result.slice(0, 4000) },
-      });
+      return { call, blocked, signature };
+    });
+
+    const results = await Promise.all(
+      entries.map(async ({ call, blocked }) => {
+        const tool = input.registry.get(call.name);
+        const scopes = tool ? tool.scopes.join(",") : "unknown";
+        input.onStep({
+          type: "tool-start",
+          data: { id: call.id, name: call.name, argsJson: call.argsJson, scopes },
+        });
+        let result: string;
+        if (blocked) {
+          result = blocked;
+        } else {
+          try {
+            result = await input.registry.execute(call.name, call.argsJson, runCtx);
+          } catch (error: unknown) {
+            result = `ERROR: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        }
+        input.onStep({
+          type: "tool-end",
+          data: { id: call.id, name: call.name, result: result.slice(0, 4000) },
+        });
+        return { call, result };
+      }),
+    );
+
+    toolCallsUsed += results.length;
+    // Record the last actual (non-blocked) call in call order, deterministically,
+    // so the next turn's repeat guard has a stable reference regardless of which
+    // parallel call happened to resolve last.
+    const lastReal = entries[entries.length - 1];
+    if (lastReal && !lastReal.blocked) {
+      lastCallSignature = lastReal.signature;
+    }
+    for (const { call, result } of results) {
       messages.push({ role: "tool", content: result, toolCallId: call.id });
+    }
+
+    // If tools attached images (image_generate / image_read), send them to the
+    // model as vision input on the next turn so it can actually see them.
+    if (pendingImages.length > 0) {
+      input.onStep({
+        type: "attached-images",
+        data: { count: pendingImages.length },
+      });
+      messages.push({
+        role: "user",
+        content: `Here ${pendingImages.length === 1 ? "is the image" : "are the images"} from the tool(s) above. Inspect it/them carefully and describe what you see, then incorporate that understanding into your answer.`,
+        images: pendingImages.slice(0, 4),
+      });
     }
   }
 

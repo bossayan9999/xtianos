@@ -9,13 +9,15 @@ import {
   listSkillDirs,
   readSkillBody,
 } from "@xtiand/mjane-core";
-import { McpStdioClient } from "@xtiand/mcp-bridge";
+import { createMcpClient, type McpClientLike, type McpServerSpec } from "@xtiand/mcp-bridge";
 
 import { prisma } from "../lib/db";
 import { decryptSecret, env } from "../lib/env";
 import { audit } from "../lib/auth";
 import { searchMemory } from "./memory";
 import { dashboardTools } from "./dashboard-tools";
+import { orchestrateTools } from "./orchestrator";
+import { imageTool, imageReadTool } from "./image-tools";
 
 export const skillsRoot = path.join(path.dirname(env.vaultPath), "skills-installed");
 
@@ -96,7 +98,10 @@ export async function buildRegistry(conversationId: number | null): Promise<Tool
       { name: "contentBase64", type: "string", description: "base64 payload (binary) — omit for text content", required: false },
       { name: "textContent", type: "string", description: "plain text/code payload", required: false },
     ],
-    run: async (args: Record<string, unknown>) => {
+    run: async (
+      args: Record<string, unknown>,
+      ctx: import("@xtiand/mjane-core").ToolContext,
+    ) => {
       const filename = String(args["filename"]).replace(/[/\\]/g, "_");
       const b64 = typeof args["contentBase64"] === "string" ? args["contentBase64"] : null;
       const text = typeof args["textContent"] === "string" ? args["textContent"] : null;
@@ -122,9 +127,25 @@ export async function buildRegistry(conversationId: number | null): Promise<Tool
           Buffer.from(b64, "base64"),
         );
       }
+      ctx.emit({
+        type: "artifact",
+        data: { id: artifact.id, filename, mime, kind: String(args["kind"]) },
+      });
       return `OK artifact #${artifact.id}`;
     },
   });
+
+  // Orchestration tools (mjane-as-general)
+  for (const tool of orchestrateTools()) {
+    registry.register(tool);
+  }
+
+  // Real image generation available to mjane too
+  const imgTool = imageTool({ enabled: true });
+  if (imgTool) registry.register(imgTool);
+
+  // Let mjane view images too (vision read-back)
+  registry.register(imageReadTool());
 
   return registry;
 }
@@ -187,7 +208,7 @@ const MODE_DIRECTIVES: Record<string, string> = {
 const OUTPUT_DIRECTIVES: Record<string, string> = {
   text: "",
   image:
-    'OUTPUT FORMAT image — reply with ONE self-contained static SVG (<svg xmlns="http://www.w3.org/2000/svg">) that visualizes the answer. Save it with artifact_save (filename ending .svg, mime image/svg+xml, kind image), then end your final message with a line exactly like ARTIFACT:<id> using the saved id, followed by a one-sentence summary. SVG text must be readable; dark background (#0f1420) with light strokes.',
+    'OUTPUT FORMAT image — produce ONE visual. For a photorealistic image, prefer an image-generation MCP tool when one is available (a tool whose name starts with mcp_ and describes image generation, e.g. mcp_generate_image). Call it with a descriptive prompt; the tool saves the image itself and its result will already include the artifact id (ARTIFACT:<id>) — do NOT re-save it. If no such MCP tool exists, you may use image_generate instead. If the chosen tool errors or is unavailable, DO NOT leave the user without an image — immediately fall back to a self-contained SVG (<svg xmlns="http://www.w3.org/2000/svg">) saved with artifact_save (filename ending .svg, mime image/svg+xml, kind image). Always end your final message with a line exactly like ARTIFACT:<id> using the saved id, followed by a one-sentence summary. For SVG: text must be readable; dark background (#0f1420) with light strokes.',
   animation:
     'OUTPUT FORMAT animation — reply with ONE self-contained ANIMATED SVG (use <animate>/<animateTransform> SMIL elements, loop indefinitely). Save it with artifact_save (… .svg, image/svg+xml, kind video), then end your final message with a line exactly like ARTIFACT:<id>, followed by a one-sentence summary. Dark theme, smooth motion.',
   data:
@@ -199,6 +220,7 @@ export async function buildSystemPrompt(
   question = "",
   mode: "chat" | "plan" | "build" = "chat",
   output: "text" | "image" | "animation" | "data" = "text",
+  mcpImageTools: string[] = [],
 ): Promise<string> {
   const parts: string[] = [
     "You are mjane, the copilot manager of xtiandOS — an agentic home-lab web OS on Kali Linux.",
@@ -206,10 +228,34 @@ export async function buildSystemPrompt(
     "When you use memory or brain notes, mention which note you recalled.",
     "Your long-term memory includes past conversations (paths like conversations/<id>) and wiki sources under BRAIN/Sources. When the user asks what you remember, what you did together, or about topics from earlier, ALWAYS use the memory_search tool — never claim you cannot recall.",
     "Ask exactly one clarifying question when requirements are unclear; otherwise act.",
+    "You are the general — you have specialized sub-agents. Use list_agents to see who is available, then delegate tasks with delegate_task. Decompose complex goals into subtasks and assign each to the best-suited agent. You can delegate multiple tasks in parallel.",
   ];
   parts.push(MODE_DIRECTIVES[mode] ?? MODE_DIRECTIVES["chat"]);
-  const outDirective = OUTPUT_DIRECTIVES[output];
-  if (outDirective) parts.push(outDirective);
+  let outDirective = OUTPUT_DIRECTIVES[output];
+  if (outDirective) {
+    if (output === "image" && mcpImageTools.length > 0) {
+      const gemini = mcpImageTools.find((n) => /generate_image/i.test(n));
+      const pollinations = mcpImageTools.find((n) => /generateImage/i.test(n) && !/generateImageUrl|listImageModels/i.test(n));
+      const others = mcpImageTools
+        .filter((n) => n !== gemini && n !== pollinations)
+        .map((n) => `\`${n}\``)
+        .join(", ");
+      const order = [
+        gemini ? `\`${gemini}\`` : null,
+        pollinations ? `\`${pollinations}\`` : null,
+        others || null,
+      ].filter((x): x is string => Boolean(x));
+      outDirective =
+        `OUTPUT FORMAT image — produce ONE visual. Photo-generating MCP tools are available; try them in this order: ${order.join(" → ")}. ` +
+        "Prefer the FIRST one (Gemini) with a descriptive, photoreal-oriented prompt and any params it supports; it saves the image itself and its result already includes the artifact id (ARTIFACT:<id>) — do NOT re-save it. " +
+        (pollinations
+          ? "If the first tool errors (e.g. rate limit/quota), do NOT give up — immediately retry the NEXT tool in the list (Pollinations): the `generateImage` tool takes {prompt, options:{model:\"flux\",width,height}} and returns the image bytes directly. "
+          : "") +
+        "If every listed tool errors, DO NOT leave the user without an image — fall back to a self-contained SVG (<svg xmlns=\"http://www.w3.org/2000/svg\">) saved with artifact_save (filename ending .svg, mime image/svg+xml, kind image). " +
+        "Always end your final message with a line exactly like ARTIFACT:<id> using the saved id, followed by a one-sentence summary. SVG text must be readable; dark background (#0f1420) with light strokes.";
+    }
+    parts.push(outDirective);
+  }
   const mojo = await readBrainFile("BRAIN/identity/mojo.md");
   if (mojo) parts.push(`### Your identity (always apply)\n${mojo.slice(0, 1800)}`);
   const contextFiles = await listContextFiles();
@@ -252,17 +298,39 @@ export async function loadHistory(conversationId: number): Promise<ChatMessage[]
   }));
 }
 
-export async function connectEnabledMcpServers(): Promise<McpStdioClient[]> {
-  const clients: McpStdioClient[] = [];
+const MCP_CONNECT_TIMEOUT_MS = 6000;
+
+export async function connectEnabledMcpServers(): Promise<McpClientLike[]> {
   const servers = await prisma.mcpServer.findMany({ where: { enabled: true } }).catch(() => []);
-  for (const server of servers) {
-    const client = new McpStdioClient();
-    try {
-      await client.connect(server.command, server.args.split(/\s+/).filter(Boolean), server.envJson);
-      clients.push(client);
-    } catch {
-      client.dispose();
-    }
+  const attempts = await Promise.allSettled(
+    servers.map(async (server) => {
+      const spec: McpServerSpec = {
+        transport: (["http", "sse"].includes(server.transport) ? server.transport : "stdio") as
+          | "stdio"
+          | "http"
+          | "sse",
+        command: server.command,
+        args: server.args.split(/\s+/).filter(Boolean),
+        envJson: server.envJson,
+        url: server.url,
+        headersJson: server.headersJson,
+      };
+      const client = createMcpClient(spec);
+      const timeout = new Promise((_r, reject) => {
+        setTimeout(() => reject(new Error("MCP connect timeout: " + server.name)), MCP_CONNECT_TIMEOUT_MS);
+      });
+      try {
+        await Promise.race([client.connect(spec), timeout]);
+        return client;
+      } catch (err) {
+        client.dispose();
+        throw err;
+      }
+    }),
+  );
+  const clients: McpClientLike[] = [];
+  for (const result of attempts) {
+    if (result.status === "fulfilled") clients.push(result.value as McpClientLike);
   }
   return clients;
 }

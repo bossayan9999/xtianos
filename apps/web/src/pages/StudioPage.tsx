@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, sseStream } from '../lib/api'
+import { artifactUrl } from '../lib/auth'
 import { ModelPicker } from '../components/ModelPicker'
 
 interface ArtifactRow {
@@ -91,7 +92,7 @@ export function StudioPage() {
               <span className={`chip chip--sev-info`}>{a.kind}</span>
               <strong>{a.filename}</strong>
               <small className="hint mono">{new Date(a.createdAt).toLocaleString()}</small>
-              <a href={`/api/artifacts/${a.id}/raw`} target="_blank" rel="noreferrer">
+              <a href={artifactUrl(a.id)} target="_blank" rel="noreferrer">
                 open
               </a>
             </li>

@@ -3,6 +3,7 @@ dist/
 *.db
 *.db-journal
 .env
+admin.credentials.txt
 .tmp/
 .vite/
 *.tsbuildinfo

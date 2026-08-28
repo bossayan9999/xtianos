@@ -27,6 +27,7 @@ async function walk(dir: string, base: string, out: string[], limit = 500): Prom
 export async function reindexVault(vaultPath: string): Promise<number> {
   const relFiles: string[] = [];
   await walk(vaultPath, vaultPath, relFiles);
+  invalidateMemoryIndex();
   await prisma.memoryChunk.deleteMany({ where: { source: "vault" } });
 
   let count = 0;
@@ -59,6 +60,7 @@ export async function reindexVault(vaultPath: string): Promise<number> {
     }
   }
   if (batch.length > 0) await prisma.memoryChunk.createMany({ data: batch });
+  invalidateMemoryIndex();
   return count;
 }
 
@@ -69,33 +71,84 @@ export interface MemoryHit {
   score: number;
 }
 
+interface MemoryIndexEntry {
+  id: number;
+  source: string;
+  path: string | null;
+  content: string;
+  vector: Float32Array;
+  createdMs: number;
+}
+
+let cachedIndex: MemoryIndexEntry[] | null = null;
+let loadingIndex: Promise<MemoryIndexEntry[]> | null = null;
+
+/**
+ * Lazy in-memory index of the most recent 3000 memory chunks. Preserves the
+ * exact candidate set searchMemory would have queried, but loads + parses
+ * embeddings once instead of per search — this removes the 3000-row fetch and
+ * 3000 JSON.parse calls from every chat turn.
+ */
+async function memoryIndex(): Promise<MemoryIndexEntry[]> {
+  if (cachedIndex !== null) return cachedIndex;
+  if (loadingIndex !== null) return loadingIndex;
+  loadingIndex = (async () => {
+    const rows = await prisma.memoryChunk.findMany({
+      select: { id: true, source: true, path: true, content: true, embeddingJson: true, createdAt: true },
+      orderBy: { id: "desc" },
+      take: 3000,
+    });
+    const entries = rows.map((row) => {
+      let vec: number[] = [];
+      try {
+        vec = JSON.parse(row.embeddingJson) as number[];
+      } catch {
+        vec = [];
+      }
+      return {
+        id: row.id,
+        source: row.source,
+        path: row.path,
+        content: row.content,
+        vector: Float32Array.from(vec),
+        createdMs: row.createdAt.getTime(),
+      };
+    });
+    cachedIndex = entries;
+    loadingIndex = null;
+    return entries;
+  })();
+  return loadingIndex;
+}
+
+/** Drop the cached index after any write so the next search sees fresh rows. */
+export function invalidateMemoryIndex(): void {
+  cachedIndex = null;
+  loadingIndex = null;
+}
+
+// Warm the index in the background at startup so the first chat turn doesn't
+// pay the initial load + embed-parse cost.
+void memoryIndex().catch(() => undefined);
+
 /** Hybrid retrieval: vector cosine (60%) + keyword overlap (40%). */
 export async function searchMemory(
   query: string,
   opts: { source?: string; limit?: number } = {},
 ): Promise<MemoryHit[]> {
   const limit = opts.limit ?? 6;
-  const queryVec = hashEmbed(query);
-  const rows = await prisma.memoryChunk.findMany({
-    where: opts.source ? { source: opts.source } : undefined,
-    orderBy: { id: "desc" },
-    take: 3000,
-  });
-  const scored = rows.map((row) => {
-    let vector: number[] = [];
-    try {
-      vector = JSON.parse(row.embeddingJson) as number[];
-    } catch {
-      vector = [];
-    }
-    const vecScore = vector.length > 0 ? cosine(queryVec, vector) : 0;
-    const kwScore = keywordScore(query, row.content);
-    const ageDays = (Date.now() - row.createdAt.getTime()) / 86_400_000;
+  const queryVec = Float32Array.from(hashEmbed(query));
+  const entries = await memoryIndex();
+  const base = opts.source ? entries.filter((e) => e.source === opts.source) : entries;
+  const scored = base.map((entry) => {
+    const vecScore = entry.vector.length > 0 ? cosine(queryVec, entry.vector) : 0;
+    const kwScore = keywordScore(query, entry.content);
+    const ageDays = (Date.now() - entry.createdMs) / 86_400_000;
     const recency = Math.exp(-ageDays / 30);
     return {
-      id: row.id,
-      path: row.path,
-      content: row.content.slice(0, 600),
+      id: entry.id,
+      path: entry.path,
+      content: entry.content.slice(0, 600),
       score: vecScore * 0.5 + kwScore * 0.4 + recency * 0.1,
     };
   });
@@ -118,6 +171,7 @@ export async function indexConversation(
   if (transcript.trim().length < 60) return 0;
 
   const relPath = `conversations/${conversationId}`;
+  invalidateMemoryIndex();
   await prisma.memoryChunk.deleteMany({ where: { source: "conversation", path: relPath } });
 
   const chunks = chunkText(transcript).filter((c) => c.trim().length >= 40);
@@ -131,5 +185,6 @@ export async function indexConversation(
       embeddingJson: JSON.stringify(hashEmbed(content)),
     })),
   });
+  invalidateMemoryIndex();
   return chunks.length;
 }

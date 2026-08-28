@@ -8,7 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "db:push": "prisma db push",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/core.test.ts"
+    "test": "node --import tsx --test src/core.test.ts src/mcp-images.test.ts src/housekeeper.test.ts src/auth.test.ts"
   },
   "keywords": [],
   "license": "ISC",

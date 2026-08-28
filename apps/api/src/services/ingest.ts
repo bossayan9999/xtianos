@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -32,7 +33,7 @@ export async function ingestRepoToBrain(
   const ref = parseGitHubUrl(url);
   if (!ref) throw new Error("not a valid github.com repo URL");
 
-  const tmp = await fs.mkdtemp(path.join("/tmp/opencode", "xos-ingest-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "xos-ingest-"));
   try {
     const tarball = path.join(tmp, `${ref.repo}.tar.gz`);
     let res = await fetch(tarballUrl(ref), { signal: AbortSignal.timeout(90_000) });

@@ -15,6 +15,12 @@ export interface ToolContext {
   /** present when the call originates from a conversation */
   conversationId: number | null;
   emit: (event: { type: string; data: unknown }) => void;
+  /**
+   * Attach an image (data URL) generated/read by a tool so a vision-capable
+   * model can actually see it on the next turn. The loop collects these and
+   * sends them as image_url parts to the provider.
+   */
+  attachImage?: (dataUrl: string) => void;
 }
 
 export interface ToolDef {

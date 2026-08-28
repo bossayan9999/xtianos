@@ -1,0 +1,22 @@
+{
+  "name": "@xtiand/mcp-server",
+  "version": "0.1.0",
+  "description": "Full MCP server exposing xtiandOS tools, resources, and prompts via stdio and Streamable HTTP",
+  "main": "src/index.ts",
+  "bin": {
+    "xtiandos-mcp": "src/index.ts"
+  },
+  "scripts": {
+    "start": "node --import tsx src/index.ts",
+    "start:http": "node --import tsx src/http-server.ts"
+  },
+  "dependencies": {
+    "@xtiand/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "tsx": "^4.20.3",
+    "typescript": "~6.0.2"
+  },
+  "license": "ISC"
+}

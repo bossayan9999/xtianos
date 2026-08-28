@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ConversationSummary } from '@xtiand/shared'
 
 import { api, sseStream } from '../lib/api'
+import { artifactUrl } from '../lib/auth'
 import { ModelPicker } from '../components/ModelPicker'
 import { WorkflowBar, type ChatMode } from '../components/WorkflowBar'
 import { VoiceSettingsPanel } from '../components/VoiceSettings'
@@ -22,11 +23,30 @@ interface ChatMessageView {
   role: string
   content: string
   meta?: string[]
+  artifacts?: number[]
 }
 
 interface StepData {
   type: string
   data: unknown
+}
+
+/**
+ * Auto-selects the answer format by keyword intent. Returns 'text' when the
+ * message doesn't ask for a visual, so the manual selection is preserved.
+ */
+export function detectOutputFormat(content: string): 'text' | 'image' | 'animation' {
+  const t = content.trim()
+  if (/\b(animate|animation|animated\s*(gif|svg)?|make\s+it\s+move|into\s+an?\s+animation)\b/i.test(t)) {
+    return 'animation'
+  }
+  if (
+    /\b(create|make|generate|draw|design|render|produce|paint)\b.*\b(image|picture|art|artwork|logo|poster|banner|icon|avatar|meme|illustration|visual|svg|diagram|flowchart|flow\s*chart|uml|graph|chart)\b/i.test(t) ||
+    /\b(image|picture|artwork|poster|banner)\b.*\b(create|make|generate|draw|design)\b/i.test(t)
+  ) {
+    return 'image'
+  }
+  return 'text'
 }
 
 export function ChatPage() {
@@ -49,6 +69,7 @@ export function ChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const dictationRef = useRef<DictationHandle | null>(null)
   const assistantTextRef = useRef('')
+  const streamedRef = useRef(false)
 
   const loadConversations = (): void => {
     api.get<ConversationSummary[]>('/api/chat').then(setConversations).catch(() => undefined)
@@ -76,7 +97,6 @@ export function ChatPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
-
   const newConversation = async (): Promise<void> => {
     const conversation = await api.post<{ id: number }>('/api/chat')
     loadConversations()
@@ -98,10 +118,14 @@ export function ChatPage() {
     setRunning(true)
     setVoiceError(null)
     stopSpeaking()
+    const autoFormat = detectOutputFormat(content)
+    const effFormat: typeof outputFormat = autoFormat !== 'text' ? autoFormat : outputFormat
+    if (effFormat !== outputFormat) setOutputFormat(effFormat)
     setActiveStage('memory')
     setToolCount(0)
     setPendingImage(null)
     assistantTextRef.current = ''
+    streamedRef.current = false
     setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', content }])
     const assistantId = `a-${Date.now()}`
     setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '' }])
@@ -110,6 +134,9 @@ export function ChatPage() {
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + text } : m)),
       )
+    }
+    const replaceAssistant = (text: string): void => {
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: text } : m)))
     }
     const setMeta = (update: string[] | ((prev: string[]) => string[])): void => {
       setMessages((prev) =>
@@ -121,19 +148,61 @@ export function ChatPage() {
         }),
       )
     }
+    const pushArtifact = (id: number): void => {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== assistantId) return m
+          const base = Array.isArray(m.artifacts) ? m.artifacts : []
+          if (base.includes(id)) return m
+          return { ...m, artifacts: [...base, id] }
+        }),
+      )
+    }
 
     try {
-      await sseStream(`/api/chat/${conversationId}/stream`, { content, model: modelSpec, mode, output: outputFormat, images: pendingImage ? [pendingImage] : undefined }, (_e, data) => {
+      await sseStream(`/api/chat/${conversationId}/stream`, { content, model: modelSpec, mode, output: effFormat, images: pendingImage ? [pendingImage] : undefined }, (_e, data) => {
         const step = data as StepData
-        if (step.type === 'message') {
+        if (step.type === 'token') {
+          // token-by-token streaming from the provider
+          const delta = String(step.data)
+          assistantTextRef.current += delta
+          streamedRef.current = true
+          appendAssistant(delta)
+        } else if (step.type === 'message') {
           setActiveStage('synthesize')
           assistantTextRef.current += String(step.data)
-          appendAssistant(String(step.data))
+          // If we already streamed tokens, this is the authoritative full reply —
+          // replace the accumulated stream to avoid duplication.
+          if (streamedRef.current) replaceAssistant(String(step.data))
+          else appendAssistant(String(step.data))
         } else if (step.type === 'status') {
           setMeta([String(step.data)])
           setActiveStage((prev) => (prev === 'memory' ? 'plan' : prev))
-        }
-        else if (step.type === 'tool-start') {
+        } else if (step.type === 'delegate') {
+          const delegate = step.data as { agentName: string; task: string }
+          setActiveStage('delegate')
+          setMeta((prev) => [...prev, `→ delegating to ${delegate.agentName}: ${delegate.task.slice(0, 80)}`])
+        } else if (step.type === 'delegate-result') {
+          const result = step.data as { agentName: string; result: string }
+          setMeta((prev) =>
+            (Array.isArray(prev) ? prev : []).map((line) =>
+              line.startsWith(`→ delegating to ${result.agentName}`) ? `${line} ✓` : line,
+            ),
+          )
+        } else if (step.type === 'sub-agent') {
+          const sub = step.data as { agentName: string; type: string; data: unknown }
+          if (sub.type === 'tool-start') {
+            const tool = sub.data as { name: string }
+            setMeta((prev) => [...prev, `  [${sub.agentName}] ⚙ ${tool.name}`])
+          } else if (sub.type === 'tool-end') {
+            const tool = sub.data as { name: string }
+            setMeta((prev) =>
+              (Array.isArray(prev) ? prev : []).map((line) =>
+                line === `  [${sub.agentName}] ⚙ ${tool.name}` ? `${line} ✓` : line,
+              ),
+            )
+          }
+        } else if (step.type === 'tool-start') {
           const tool = step.data as { name: string; scopes: string }
           setActiveStage('tools')
           setToolCount((c) => c + 1)
@@ -145,6 +214,9 @@ export function ChatPage() {
               line.startsWith(`⚙ ${tool.name}`) ? `${line} ✓` : line,
             ),
           )
+        } else if (step.type === 'artifact') {
+          const art = step.data as { id?: number }
+          if (typeof art.id === 'number' && Number.isFinite(art.id)) pushArtifact(art.id)
         } else if (step.type === 'error') {
           appendAssistant(`\n\n⚠️ ${String(step.data)}`)
         }
@@ -194,6 +266,12 @@ export function ChatPage() {
     setSpeakEnabled(next)
   }
 
+  // Auto-save the global default model whenever one is chosen from the chat picker
+  const changeDefaultModel = (spec: string): void => {
+    setModelSpec(spec)
+    void api.put('/api/providers/default-model', { model: spec }).catch(() => undefined)
+  }
+
   return (
     <div className="chat-page">
       <aside className="chat-sidebar">
@@ -224,7 +302,7 @@ export function ChatPage() {
           toolCount={toolCount}
         />
         <div className="chat-toolbar">
-          <ModelPicker value={modelSpec} onChange={setModelSpec} />
+          <ModelPicker value={modelSpec} onChange={changeDefaultModel} />
           <button
             type="button"
             className={autoSpeak ? 'voice-btn active' : 'voice-btn'}
@@ -272,21 +350,28 @@ export function ChatPage() {
             <p className="chat-empty">Talk to mjane — she can search her brain, run tools, manage tasks, use Docker and more.</p>
           )}
           {messages.map((m) => {
-            const artifactMatch = /ARTIFACT:(\d+)/.exec(m.content)
+            const match = /ARTIFACT:(\d+)/.exec(m.content)
+            const artifactIds = Array.from(
+              new Set<number>([
+                ...(Array.isArray(m.artifacts) ? m.artifacts : []),
+                ...(match ? [Number(match[1])] : []),
+              ]),
+            )
             return (
               <article key={m.id} className={`bubble bubble--${m.role}`}>
                 {m.meta && m.meta.length > 0 && (
                   <pre className="bubble-meta">{m.meta.join('\n')}</pre>
                 )}
-                {artifactMatch && (
+                {artifactIds.map((id) => (
                   <img
+                    key={id}
                     className="artifact-image"
-                    src={`/api/artifacts/${artifactMatch[1]}/raw`}
+                    src={artifactUrl(id)}
                     alt="mjane's generated visual"
                   />
-                )}
+                ))}
                 <div className={`bubble-content role-${m.role}`}>
-                  {(artifactMatch ? m.content.replace(/ARTIFACT:\d+/, '') : m.content) || '…'}
+                  {(match ? m.content.replace(/ARTIFACT:\d+/g, '') : m.content) || '…'}
                 </div>
               </article>
             )

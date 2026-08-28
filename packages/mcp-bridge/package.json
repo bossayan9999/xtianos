@@ -1,7 +1,10 @@
 {
   "name": "@xtiand/mcp-bridge",
   "version": "0.1.0",
-  "description": "Minimal MCP stdio client bridge for xtiandOS",
+  "description": "MCP bridge for xtiandOS: stdio + Streamable HTTP clients with tools, resources, and prompts",
   "main": "src/index.ts",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  }
 }

@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import "dotenv/config";
+import dotenv from "dotenv";
+
+// npm workspaces run this from apps/api, but .env lives at the monorepo root.
+dotenv.config({ path: path.resolve(__dirname, "../../../../.env") });
 
 function readEnv(key: string, fallback: string): string {
   const value = process.env[key];
@@ -19,6 +22,13 @@ export const env = {
   ),
   workspaceDir: path.resolve(readEnv("WORKSPACE_DIR", "~/Desktop/xtiandOS/artifacts".replace("~", process.env["HOME"] ?? "/root"))),
   requestTimeoutMs: Number.parseInt(readEnv("REQUEST_TIMEOUT_MS", "120000"), 10),
+  webOrigin: readEnv("WEB_ORIGIN", "http://localhost:5174"),
+  smtpHost: readEnv("SMTP_HOST", ""),
+  smtpPort: Number.parseInt(readEnv("SMTP_PORT", "587"), 10),
+  smtpSecure: readEnv("SMTP_SECURE", "0") === "1",
+  smtpUser: readEnv("SMTP_USER", ""),
+  smtpPass: readEnv("SMTP_PASS", ""),
+  smtpFrom: readEnv("SMTP_FROM", "xtiandOS <no-reply@localhost>"),
 };
 
 if (!fs.existsSync(env.workspaceDir)) {

@@ -11,10 +11,21 @@ import {
 } from "../services/agent-service";
 import { env } from "../lib/env";
 import { indexConversation } from "../services/memory";
+import { imagePayloadFromResult, storeMcpImage } from "../services/mcp-images";
+import {
+  finishPipelineRun,
+  getPipelineState,
+  stepPipeline,
+  startPipelineRun,
+} from "../services/pipeline";
 import { runAgentLoop } from "@xtiand/mjane-core";
 import type { ChatMessage, ToolCallDto } from "@xtiand/shared";
 
 export const chatRouter = Router();
+
+chatRouter.get("/pipeline", (_req, res): void => {
+  res.json(getPipelineState());
+});
 
 chatRouter.get("/", async (_req, res): Promise<void> => {
   const rows = await prisma.conversation.findMany({
@@ -81,7 +92,9 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
 
   await prisma.message.create({ data: { conversationId: id, role: "user", content } });
 
-  const mcpClients: { dispose(): void }[] = [];
+  const mcpClients: import("@xtiand/mcp-bridge").McpClientLike[] = [];
+  let runId = 0;
+  const seenArtifacts = new Set<number>();
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -95,6 +108,14 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
     const provider = await resolveProvider(
       typeof req.body?.["model"] === "string" ? req.body["model"] : null,
     );
+
+    runId = startPipelineRun({
+      conversationId: id,
+      prompt: content,
+      output,
+      provider: provider.providerId > 0 ? String(provider.providerId) : "?",
+      model: provider.model,
+    });
 
     const userMsgCount = await prisma.message.count({ where: { conversationId: id } });
     if (userMsgCount <= 1) {
@@ -113,15 +134,40 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
           name: `mcp_${tool.name}`,
           description: `[MCP] ${tool.description}`,
           scopes: ["net"],
-          params: [{ name: "argsJson", type: "string", description: "JSON args for the MCP tool", required: false }],
-          run: async (args: Record<string, unknown>) =>
-            client.call(tool.name, String(args["argsJson"] ?? "{}")),
+          params: [],
+          run: async (
+            args: Record<string, unknown>,
+            ctx: import("@xtiand/mjane-core").ToolContext,
+          ) => {
+            const result = await client.call(tool.name, JSON.stringify(args ?? {}));
+            let image = imagePayloadFromResult(result, ctx.workspaceDir);
+            if (image) {
+              try {
+                const saved = await storeMcpImage(image, ctx, result);
+                ctx.emit({
+                  type: "artifact",
+                  data: { id: saved.id, filename: saved.filename, mime: saved.mime, kind: "image" },
+                });
+                return `${result}\n\nARTIFACT:${saved.id}`;
+              } catch {
+                image = null;
+              }
+            }
+            return result;
+          },
         });
       }
     }
 
     const history = await loadHistory(id);
-    const systemPrompt = await buildSystemPrompt(id, content, mode, output);
+    const mcpImageTools = mcpClients
+      .flatMap((c) => [...c.tools.values()])
+      .filter(
+        (t) =>
+          /image|img|photo|picture/.test(t.name) || /image|img|photo|visual/.test(t.description),
+      )
+      .map((t) => `mcp_${t.name}`);
+    const systemPrompt = await buildSystemPrompt(id, content, mode, output, mcpImageTools);
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
       ...history.slice(0, -1),
@@ -132,6 +178,98 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
       },
     ];
 
+    const record = (event: { type: string; data: unknown }): void => {
+      send("agent", event);
+      if (!runId) return;
+      try {
+        const t = event.type;
+        if (t === "status" || t === "token") return;
+        const d = event.data as Record<string, unknown> | undefined;
+        if (t === "tool-start") {
+          const tool = String(d?.["name"] ?? "tool");
+          stepPipeline(runId, {
+            conversationId: id,
+            stage: "act",
+            kind: "tool-start",
+            label: tool,
+            detail: String(d?.["argsJson"] ?? "").slice(0, 220),
+            tool,
+            running: true,
+          });
+        } else if (t === "tool-end") {
+          const tool = String(d?.["name"] ?? "tool");
+          stepPipeline(runId, {
+            conversationId: id,
+            stage: "act",
+            kind: "tool-end",
+            label: tool,
+            detail: String(d?.["result"] ?? "").slice(0, 260),
+            tool,
+            running: false,
+          });
+        } else if (t === "artifact") {
+          const a = d as { id?: number; filename?: string; mime?: string; kind?: string } | undefined;
+          if (a?.id != null) {
+            if (seenArtifacts.has(a.id)) return;
+            seenArtifacts.add(a.id);
+          }
+          stepPipeline(runId, {
+            conversationId: id,
+            stage: "output",
+            kind: "artifact",
+            label: a?.kind === "image" ? `Image #${a?.id}` : `Artifact #${a?.id}`,
+            detail: a?.filename ?? "",
+            artifactId: a?.id ?? null,
+            mime: a?.mime ?? null,
+            filename: a?.filename ?? null,
+            running: false,
+          });
+        } else if (t === "message") {
+          stepPipeline(runId, {
+            conversationId: id,
+            stage: "synthesize",
+            kind: "message",
+            label: "Synthesize",
+            detail: String(d ?? "").slice(0, 300),
+            running: false,
+          });
+        } else if (t === "delegate") {
+          const g = d as { agentName?: string; task?: string } | undefined;
+          stepPipeline(runId, {
+            conversationId: id,
+            stage: "act",
+            kind: "delegate",
+            label: `delegate → ${g?.agentName ?? "agent"}`,
+            detail: String(g?.task ?? "").slice(0, 200),
+            tool: "delegate",
+            running: true,
+          });
+        } else if (t === "error") {
+          stepPipeline(runId, {
+            conversationId: id,
+            stage: "error",
+            kind: "error",
+            label: "Error",
+            detail: String(d ?? "").slice(0, 300),
+            running: false,
+          });
+        } else if (t === "attached-images") {
+          const count = (d as { count?: number } | undefined)?.["count"] ?? 0;
+          stepPipeline(runId, {
+            conversationId: id,
+            stage: "act",
+            kind: "tool-end",
+            label: "vision",
+            detail: `${count} image(s) attached to model`,
+            tool: "image_read",
+            running: false,
+          });
+        }
+      } catch {
+        /* pipeline recording must never block the run */
+      }
+    };
+
     const result = await runAgentLoop({
       messages,
       maxTurns: mode === "chat" ? 10 : 16,
@@ -141,12 +279,12 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
         vaultPath: env.vaultPath,
         workspaceDir: env.workspaceDir,
         conversationId: id,
-        emit: () => undefined,
+        emit: (event) => record(event),
       },
       provider,
-      onStep: (step) => send("agent", step),
+      onStep: (step) => record(step),
+      onToken: () => undefined,
     });
-
     const finalAssistant = [...result.messages].reverse().find((m) => m.role === "assistant");
     await prisma.message.create({
       data: {
@@ -172,12 +310,14 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
     }
 
     send("done", { ok: true });
+    if (runId) finishPipelineRun(runId, "done");
   } catch (error: unknown) {
     send("agent", {
       type: "error",
       data: error instanceof Error ? error.message : String(error),
     });
     send("done", { ok: false });
+    if (runId) finishPipelineRun(runId, "error");
   } finally {
     for (const client of mcpClients) client.dispose();
     res.end();

@@ -4,6 +4,15 @@ import type { ToolDef } from "../types";
 
 const ANTHROPIC_VERSION = "2023-06-01";
 
+function parseDataUrl(dataUrl: string): { mime: string; data: string } | null {
+  const m = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl);
+  if (!m) return null;
+  const mime = m[1] || "image/png";
+  const data = m[2].replace(/\s/g, "");
+  if (!data) return null;
+  return { mime, data };
+}
+
 function toAnthropicMessages(messages: ChatMessage[]): {
   system: string;
   messages: { role: string; content: unknown }[];
@@ -38,6 +47,20 @@ function toAnthropicMessages(messages: ChatMessage[]): {
         blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input });
       }
       out.push({ role: "assistant", content: blocks });
+    } else if (m.images && m.images.length > 0) {
+      // User message carrying vision images (data URLs) -> Anthropic image blocks.
+      const blocks: unknown[] = [];
+      if (m.content) blocks.push({ type: "text", text: m.content });
+      for (const dataUrl of m.images) {
+        const parsed = parseDataUrl(dataUrl);
+        if (parsed) {
+          blocks.push({
+            type: "image",
+            source: { type: "base64", media_type: parsed.mime, data: parsed.data },
+          });
+        }
+      }
+      out.push({ role: "user", content: blocks });
     } else {
       out.push({ role: m.role === "assistant" ? "assistant" : "user", content: m.content });
     }

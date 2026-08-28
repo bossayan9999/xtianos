@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -37,7 +38,7 @@ export async function installSkillsFromGitHub(
 ): Promise<string[]> {
   const ref = parseGitHubUrl(url);
   if (!ref) throw new Error("not a valid github.com repo URL");
-  const tmp = await fs.mkdtemp(path.join("/tmp/opencode", "xos-skill-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "xos-skill-"));
   try {
     const tarball = path.join(tmp, `${ref.repo}.tar.gz`);
     const res = await fetch(
