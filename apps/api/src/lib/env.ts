@@ -29,6 +29,10 @@ export const env = {
   smtpUser: readEnv("SMTP_USER", ""),
   smtpPass: readEnv("SMTP_PASS", ""),
   smtpFrom: readEnv("SMTP_FROM", "xtiandOS <no-reply@localhost>"),
+  judgeModel: readEnv("JUDGE_MODEL", ""),
+  embeddingsBaseUrl: readEnv("EMBEDDINGS_BASE_URL", ""),
+  embeddingsApiKey: readEnv("EMBEDDINGS_API_KEY", ""),
+  embeddingsModel: readEnv("EMBEDDINGS_MODEL", "text-embedding-3-small"),
 };
 
 if (!fs.existsSync(env.workspaceDir)) {

@@ -1,0 +1,35 @@
+# xtiandOS — Cloudflare Tunnel config (production, own domain)
+#
+# This mirrors the LIVE Windows service that already runs on this machine.
+# The service was installed with:
+#   cloudflared service install   (reads C:\Users\Christian\.cloudflared\config.yml)
+# Its other ingress entries (v4.bossayan.com -> :4000, bossayan.com -> :8000)
+# are kept here for completeness but are unrelated to xtiandOS.
+#
+# To change the backend after editing the config:
+#   sc.exe stop Cloudflared ; start Cloudflared       (run as Administrator)
+#   # or:  cloudflared tunnel run --config "$HOME\.cloudflared\config.yml" bossayan-os
+#
+# xtiand.bossayan.com is published by this tunnel; Cloudflare terminates TLS,
+# so the phone gets a browser-trusted padlock and camera/mic/PWA all work with
+# no port forwarding on the router.
+
+tunnel: bossayan-os
+credentials-file: C:/Users/Christian/.cloudflared/633ed772-9ef5-4876-a2ea-1b157bcc73b8.json
+
+ingress:
+  # xtiandOS — the vite dev server on :5174 (self-signed basic-ssl, ignored).
+  # It already proxies /api and /health to :3101.
+  - hostname: xtiand.bossayan.com
+    service: https://127.0.0.1:5174
+    originRequest:
+      noTLSVerify: true
+  # To serve the production build instead of the dev server, run a local
+  # plain-HTTP Caddy (deploy/Caddyfile adapted to :8080) and point here:
+  # - hostname: xtiand.bossayan.com
+  #   service: http://127.0.0.1:8080
+  - hostname: v4.bossayan.com
+    service: http://127.0.0.1:4000
+  - hostname: bossayan.com
+    service: http://127.0.0.1:8000
+  - service: http_status:404

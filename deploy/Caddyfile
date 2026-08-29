@@ -1,0 +1,47 @@
+# xtiandOS — production reverse proxy (trusted HTTPS for phone access)
+#
+# Serves the built web app and proxies the API + SSE under ONE origin,
+# so the phone gets a trusted secure context: camera, mic, TTS and the
+# PWA service worker all work over HTTPS.
+#
+# ── How to run (from the repo root) ─────────────────────────────────────────
+#   1) npm install -g caddy    (or winget install Caddy.Caddy / apt install caddy)
+#   2) npm run build -w apps/web
+#   3) set $env:XT_APP_DOMAIN = "your-domain.example.com"   (see README)
+#   4) caddy run  --config deploy/Caddyfile
+#
+# Required for Let's Encrypt: a real domain with an A/AAAA record pointing at
+# this machine and TCP 80 + 443 reachable. No domain? See the Cloudflare
+# quick-tunnel section in deploy/README.md.
+#
+# All values can be overridden via environment variables:
+#   XT_APP_DOMAIN  — public hostname + auto TLS   (default: xtiandos.example.com)
+#   XT_SITE_ROOT   — built web app directory      (default: apps/web/dist)
+#   XT_API_PORT    — API server port              (default: 3101)
+#   XT_HTTP_PORT   — HTTP listen port             (default: 80)
+#   XT_HTTPS_PORT  — HTTPS listen port            (default: 443)
+{
+	http_port {$XT_HTTP_PORT:80}
+	https_port {$XT_HTTPS_PORT:443}
+}
+
+{$XT_APP_DOMAIN:xtiandos.example.com} {
+	encode zstd gzip
+
+	root * {$XT_SITE_ROOT:apps/web/dist}
+
+	handle /health {
+		reverse_proxy 127.0.0.1:{$XT_API_PORT:3101}
+	}
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:{$XT_API_PORT:3101} {
+			flush_interval -1 # stream SSE frames to the chat as they arrive
+		}
+	}
+
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
+}

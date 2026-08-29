@@ -10,6 +10,7 @@ export default defineConfig({
     host: true, // LAN + phone access
     port: 5174,
     strictPort: true,
+    allowedHosts: ['.bossayan.com'],
     proxy: {
       '/api': API_TARGET,
       '/health': API_TARGET,

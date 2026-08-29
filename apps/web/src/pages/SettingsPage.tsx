@@ -4,6 +4,7 @@ import type { ProviderKind } from '@xtiand/shared'
 import { api } from '../lib/api'
 import { ModelPicker } from '../components/ModelPicker'
 import { AccountSecurity } from '../components/AccountSecurity'
+import { QualitySettingsPanel } from '../components/QualitySettingsPanel'
 
 interface ProviderRow {
   id: number
@@ -226,6 +227,8 @@ export function SettingsPage() {
           <p className="hint">loading…</p>
         )}
       </section>
+
+      <QualitySettingsPanel />
 
       <AccountSecurity />
 

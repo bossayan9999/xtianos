@@ -4,7 +4,21 @@ let docker: Docker | null = null;
 
 function client(): Docker {
   if (docker === null) {
-    docker = new Docker({ socketPath: "/var/run/docker.sock" });
+    const host = process.env.DOCKER_HOST;
+    if (host) {
+      if (host.startsWith("unix://")) {
+        docker = new Docker({ socketPath: host.slice("unix://".length) });
+      } else if (host.startsWith("npipe://")) {
+        docker = new Docker({ socketPath: host.slice("npipe://".length) || "//./pipe/docker_engine" });
+      } else {
+        const u = new URL(host);
+        docker = new Docker({ host: u.hostname, port: Number(u.port || 80) });
+      }
+    } else {
+      docker = new Docker({
+        socketPath: process.platform === "win32" ? "//./pipe/docker_engine" : "/var/run/docker.sock",
+      });
+    }
   }
   return docker;
 }

@@ -26,13 +26,53 @@ model Conversation {
 }
 
 model Message {
-  id             Int          @id @default(autoincrement())
+  id             Int             @id @default(autoincrement())
   conversationId Int
   role           String
   content        String
   toolCallsJson  String?
-  createdAt      DateTime     @default(now())
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  qualityScore   Int?
+  qualityFlags   String?
+  grounded       Boolean         @default(false)
+  qualityRevisions Int           @default(0)
+  latencyMs      Int?
+  tokensEstimated Int?
+  createdAt      DateTime        @default(now())
+  conversation   Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  feedback       MessageFeedback?
+}
+
+model MessageFeedback {
+  id        Int      @id @default(autoincrement())
+  messageId Int      @unique
+  vote      Int      @default(0)
+  note      String?
+  createdAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model RunRecord {
+  id              Int      @id @default(autoincrement())
+  runId           Int
+  conversationId  Int
+  prompt          String
+  provider        String
+  model           String
+  mode            String   @default("chat")
+  outputKind      String   @default("text")
+  latencyMs       Int
+  tokensEstimated Int?
+  modelCalls      Int      @default(0)
+  totalArtifacts  Int      @default(0)
+  grounded        Boolean  @default(false)
+  qualityScore    Int?
+  qualityFlags    String?
+  revisions       Int      @default(0)
+  status          String   @default("done")
+  createdAt       DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([conversationId])
 }
 
 model Project {

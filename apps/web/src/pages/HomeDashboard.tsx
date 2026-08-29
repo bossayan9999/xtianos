@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 
 import { artifactUrl } from '../lib/auth'
+import { QualityPanel } from '../components/QualityPanel'
 
 interface Agent {
   id: number
@@ -81,7 +82,6 @@ export function HomeDashboard({ compact = false }: DashboardProps) {
   const [liveText, setLiveText] = useState('idle')
   const [runs, setRuns] = useState<PipelineRun[]>([])
   const [steps, setSteps] = useState<PipelineStep[]>([])
-  const [flowStamp, setFlowStamp] = useState(0)
   const lastMsgIds = useRef<Set<string>>(new Set())
 
   // Load agents + refresh status
@@ -111,7 +111,6 @@ export function HomeDashboard({ compact = false }: DashboardProps) {
       .then((p) => {
         setRuns(Array.isArray(p.runs) ? p.runs : [])
         setSteps(Array.isArray(p.steps) ? p.steps : [])
-        setFlowStamp((s) => s + 1)
       })
       .catch(() => {})
   }, [])
@@ -151,8 +150,26 @@ export function HomeDashboard({ compact = false }: DashboardProps) {
   const subs = agents.filter((a) => !a.isGeneral)
   const working = subs.filter((a) => a.status === 'working')
 
-  const orbitCenter = { x: 190, y: 190 }
+  const orbitCenter = { x: 190, y: 200 }
   const orbitR = 140
+
+  // ── Live data-flow (merged into the constellation) ──
+  const SPINE_X = 190
+  const STATION_YS = [112, 288, 356]
+  const wrap = (text: string, width: number): string[] => {
+    const lines: string[] = []
+    let cur = ''
+    for (const word of text.split(/\s+/)) {
+      if ((cur + ' ' + word).trim().length > width) {
+        if (cur) lines.push(cur.trim())
+        cur = word
+      } else {
+        cur = (cur + ' ' + word).trim()
+      }
+    }
+    if (cur) lines.push(cur.trim())
+    return lines.slice(0, 2)
+  }
 
   const getPos = (agent: Agent, idx: number): { x: number; y: number } => {
     if (agent.isGeneral) return orbitCenter
@@ -166,6 +183,7 @@ export function HomeDashboard({ compact = false }: DashboardProps) {
 
   // ── Live data-flow derived state ──
   const run = runs[0] ?? null
+  const goalLines = run ? wrap(run.prompt.slice(0, 90), 30) : ['waiting for a run — ask mjane anything']
   const runSteps = run ? steps.filter((s) => s.runId === run.id) : []
   const flowRunning = (run?.status ?? '') === 'running'
   const toolSteps = runSteps.filter((s) => s.kind === 'tool-start' || s.kind === 'delegate')
@@ -196,10 +214,37 @@ export function HomeDashboard({ compact = false }: DashboardProps) {
         <div className="dash-left panel">
           <h3 className="dash-panel-title">Agent Constellation</h3>
 
-          {/* Orbital SVG */}
+          <div className="dash-flow-head">
+            <span className="flow-run-meta">
+              {run ? `live run #${run.id} · ${run.model}` : 'no active run'}
+            </span>
+            <span className={`flow-badge ${flowRunning ? 'on' : ''}`}>
+              {flowRunning ? 'LIVE' : (run?.status ?? 'idle')}
+            </span>
+          </div>
+
+          {/* Orbital SVG with the data spine merged in */}
           <div className="dash-orbital">
-            <svg width="380" height="380" viewBox="0 0 380 380">
+            <svg width="380" height="430" viewBox="0 0 380 430">
+              {/* data spine + comets (behind the constellation) */}
+              <path className="dash-spine" d="M190,52 L190,356" />
+              <circle r="4" fill="#57d9a3">
+                <animateMotion
+                  dur={flowRunning ? '0.9s' : '2.4s'}
+                  repeatCount="indefinite"
+                  path="M190,52 L190,356"
+                />
+              </circle>
+              <circle r="3" fill="#e0af68" opacity="0.85">
+                <animateMotion
+                  dur={flowRunning ? '0.9s' : '2.4s'}
+                  begin={flowRunning ? '0.45s' : '1.2s'}
+                  repeatCount="indefinite"
+                  path="M190,52 L190,356"
+                />
+              </circle>
               <circle cx={orbitCenter.x} cy={orbitCenter.y} r={orbitR} fill="none" stroke="#ffffff12" strokeWidth="1" strokeDasharray="4 8" />
+              <circle cx={orbitCenter.x} cy={orbitCenter.y} r={orbitR - 26} fill="none" stroke="#ffffff08" strokeWidth="1" strokeDasharray="2 10" />
 
               {/* Connection lines + data particles */}
               {subs.map((agent, idx) => {
@@ -252,93 +297,81 @@ export function HomeDashboard({ compact = false }: DashboardProps) {
                   </g>
                 )
               })}
-            </svg>
-          </div>
 
-          {/* Workflow pipeline */}
-          <h3 className="dash-panel-title dash-pipeline-title">
-            Live Data Flow
-            {run && (
-              <span className="flow-run-meta">
-                #{run.id} · {run.model}
-              </span>
-            )}
-            <span className={`flow-badge ${flowRunning ? 'on' : ''}`}>
-              {flowRunning ? 'LIVE' : (run?.status ?? '')}
-            </span>
-          </h3>
-          <div className="dash-pipeline flow">
-            <div className="flow-node flow-node--goal">
-              <span className="flow-node-label">🎯 Goal</span>
-              {run ? (
-                <span className="flow-node-detail">{run.prompt}</span>
-              ) : (
-                <span className="flow-node-detail hint">waiting for a run — ask mjane anything</span>
+              {/* Goal node */}
+              <g className="flow-goal">
+                <circle cx={SPINE_X} cy={26} r="13" className="flow-goal-node" >
+                  {(run && flowRunning) && (
+                    <animate attributeName="opacity" values="0.7;1;0.7" dur="1.6s" repeatCount="indefinite" />
+                  )}
+                </circle>
+                <text x={SPINE_X} y={30} textAnchor="middle" fontSize="13">🎯</text>
+                {goalLines.map((line, i) => (
+                  <text key={i} x={SPINE_X} y={48 + i * 11} textAnchor="middle" className="flow-goal-text">
+                    {i === 0 ? (run?.prompt ? 'goal: ' + line : line) : line}
+                  </text>
+                ))}
+              </g>
+
+              {/* Step stations along the spine */}
+              {uniqueTools.slice(0, 3).map((step, i) => {
+                const y = STATION_YS[i]
+                const active = step === lastTool && flowRunning
+                return (
+                  <g key={step.id} className={active ? 'flow-station active' : 'flow-station'}>
+                    {active && (
+                      <circle cx={SPINE_X} cy={y} r="17">
+                        <animate attributeName="opacity" values="0.15;0.5;0.15" dur="1s" repeatCount="indefinite" />
+                      </circle>
+                    )}
+                    <rect x={SPINE_X - 78} y={y - 12} width={156} height={24} rx={12} />
+                    <text x={SPINE_X - 66} y={y + 4} fontSize="13">{step.kind === 'delegate' ? '🤝' : '⚙️'}</text>
+                    <text x={SPINE_X - 48} y={y + 4} className="flow-station-label">{step.label}</text>
+                    <text x={SPINE_X + 62} y={y + 4} textAnchor="end" className="flow-station-detail">{step.detail.slice(0, 20)}</text>
+                  </g>
+                )
+              })}
+              {uniqueTools.length === 0 && (
+                <g className="flow-station">
+                  <rect x={SPINE_X - 78} y={STATION_YS[0] - 12} width={156} height={24} rx={12} />
+                  <text x={SPINE_X - 48} y={STATION_YS[0] + 4} className="flow-station-label">act — no tools yet</text>
+                </g>
               )}
-            </div>
-            <span className="dash-wire">
-              <i
-                key={flowStamp}
-                className="dash-flow-particle"
-                style={{
-                  animationDuration: flowRunning ? '0.7s' : '1.8s',
-                  backgroundColor: flowRunning ? '#ffd479' : '#46587a',
-                }}
-              />
-            </span>
-            {uniqueTools.length === 0 && (
-              <>
-                <div className="flow-node flow-node--act"><span className="flow-node-label">⚙️ Act</span></div>
-                <span className="dash-wire">
-                  <i key={flowStamp} className="dash-flow-particle" style={{ animationDuration: '1.8s', backgroundColor: '#46587a' }} />
-                </span>
-              </>
-            )}
-            {uniqueTools.map((step) => (
-              <Fragment key={step.id}>
-                <div className={`flow-node flow-node--act ${step === lastTool && flowRunning ? 'active' : ''}`}>
-                  <span className="flow-node-label">
-                    {step.kind === 'delegate' ? '🤝' : '⚙️'} {step.label}
-                  </span>
-                  <span className="flow-node-detail">{step.detail}</span>
-                </div>
-                <span className="dash-wire">
-                  <i
-                    key={`${flowStamp}-${step.id}`}
-                    className="dash-flow-particle"
-                    style={{
-                      animationDuration: step === lastTool && flowRunning ? '0.7s' : '1.8s',
-                      backgroundColor: step === lastTool && flowRunning ? '#5aa7ff' : '#46587a',
-                    }}
-                  />
-                </span>
-              </Fragment>
-            ))}
-            <div className={`flow-node flow-node--output ${outputIsImage ? 'has-image' : ''}`}>
-              <span className="flow-node-label">🖼️ Output</span>
-              {outputIsImage && artifactStep ? (
-                <a
-                  className="flow-thumb-link"
-                  href={artifactUrl(artifactStep.artifactId)}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="open full size"
-                >
-                  <img
-                    className="flow-thumb"
-                    src={artifactUrl(artifactStep.artifactId)}
-                    alt={artifactStep.filename ?? 'output image'}
-                  />
-                  <span className="flow-thumb-meta">{artifactStep.filename}</span>
-                </a>
-              ) : lastMessage ? (
-                <span className="flow-node-detail">{lastMessage.detail}</span>
-              ) : run && !flowRunning ? (
-                <span className="flow-node-detail hint">{run.status}</span>
-              ) : (
-                <span className="flow-node-detail hint">data lands here…</span>
-              )}
-            </div>
+
+              {/* Output node */}
+              <g className="flow-output">
+                <circle cx={SPINE_X} cy={386} r="17" className={`flow-output-node ${outputIsImage ? 'has-image' : ''}`}>
+                  <animate attributeName="opacity" values="0.7;1;0.7" dur="2.4s" repeatCount="indefinite" />
+                </circle>
+                {outputIsImage && artifactStep ? (
+                  <a href={artifactUrl(artifactStep.artifactId)} target="_blank" rel="noreferrer">
+                    <clipPath id="output-clip">
+                      <circle cx={SPINE_X} cy={386} r="15" />
+                    </clipPath>
+                    <image
+                      href={artifactUrl(artifactStep.artifactId)}
+                      x={SPINE_X - 15}
+                      y={371}
+                      width={30}
+                      height={30}
+                      clipPath="url(#output-clip)"
+                      preserveAspectRatio="xMidYMid slice"
+                    />
+                  </a>
+                ) : (
+                  <text x={SPINE_X} y={390} textAnchor="middle" fontSize="13">🖼️</text>
+                )}
+                <text x={SPINE_X} y={414} textAnchor="middle" className="flow-output-text">
+                  {outputIsImage && artifactStep
+                    ? (artifactStep.filename ?? 'output').slice(0, 34)
+                    : lastMessage
+                      ? `output · ${lastMessage.detail.slice(0, 42)}`
+                      : run && !flowRunning
+                        ? run.status
+                        : 'output · data lands here…'}
+                </text>
+              </g>
+            </svg>
           </div>
 
           {/* Live step tape */}
@@ -398,6 +431,8 @@ export function HomeDashboard({ compact = false }: DashboardProps) {
               ))}
             </div>
           </div>
+
+          <QualityPanel />
 
           <div className="panel">
             <h3 className="dash-panel-title">Agent Model Config</h3>

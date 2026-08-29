@@ -1,8 +1,21 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { prisma } from "../lib/db";
 import { chunkText, cosine, hashEmbed, keywordScore } from "@xtiand/mjane-core";
+
+import { prisma } from "../lib/db";
+import {
+  annReady,
+  currentVecDim,
+  dropVectorIndex,
+  ensureVecTable,
+  pruneStaleVectors,
+  rebuildVectorIndex,
+  searchVectors,
+  upsertVector,
+  vectorCount,
+} from "../lib/vec";
+import { activeEmbedder, embedBatchWithFallback } from "./embedding";
 
 const CODE_RE = /\.(md|txt|json|ts|js|mjs|py|sh|ya?ml)$/i;
 
@@ -23,6 +36,57 @@ async function walk(dir: string, base: string, out: string[], limit = 500): Prom
   }
 }
 
+interface ChunkRow {
+  source: string;
+  path: string | null;
+  chunkIndex: number;
+  content: string;
+}
+
+/**
+ * Embed a list of chunks via the active embedder (real provider when
+ * configured, feature-hash otherwise), insert them into MemoryChunk and the
+ * ANN index, then drop stale vectors. Returns the number of chunks inserted.
+ */
+async function storeChunks(chunks: ChunkRow[]): Promise<number> {
+  if (chunks.length === 0) return 0;
+  const texts = chunks.map((c) => c.content);
+  const { vectors } = await embedBatchWithFallback(texts);
+  let dimOk = false;
+  try {
+    const dim = activeEmbedder().dim;
+    if (dim !== currentVecDim()) dropVectorIndex();
+    ensureVecTable(dim);
+    dimOk = true;
+  } catch {
+    dimOk = false;
+  }
+  let inserted = 0;
+  for (let i = 0; i < chunks.length; i += 1) {
+    const vec = vectors[i] ?? Float32Array.from(hashEmbed(chunks[i]!.content));
+    const row = await prisma.memoryChunk.create({
+      data: {
+        source: chunks[i]!.source,
+        path: chunks[i]!.path,
+        chunkIndex: chunks[i]!.chunkIndex,
+        content: chunks[i]!.content,
+        embeddingJson: JSON.stringify(Array.from(vec)),
+      },
+    });
+    inserted += 1;
+    if (dimOk) {
+      try {
+        upsertVector(row.id, vec);
+      } catch {
+        /* ANN write must never break indexing */
+      }
+    }
+  }
+  if (dimOk) pruneStaleVectors();
+  invalidateMemoryIndex();
+  return inserted;
+}
+
 /** Rebuilds the semantic index of the vault (chunk + embed every file). */
 export async function reindexVault(vaultPath: string): Promise<number> {
   const relFiles: string[] = [];
@@ -31,35 +95,29 @@ export async function reindexVault(vaultPath: string): Promise<number> {
   await prisma.memoryChunk.deleteMany({ where: { source: "vault" } });
 
   let count = 0;
-  const batch: {
-    source: string;
-    path: string;
-    chunkIndex: number;
-    content: string;
-    embeddingJson: string;
-  }[] = [];
+  const batch: ChunkRow[] = [];
+
+  const flush = async (): Promise<void> => {
+    if (batch.length === 0) return;
+    count += await storeChunks(batch.splice(0));
+  };
 
   for (const rel of relFiles) {
     const full = path.join(vaultPath, rel);
     const stat = await fs.stat(full).catch(() => null);
     if (!stat || stat.size > 400_000) continue;
     const content = await fs.readFile(full, "utf8").catch(() => "");
-    const chunks = chunkText(content);
-    for (let i = 0; i < chunks.length; i += 1) {
-      batch.push({
-        source: "vault",
-        path: rel,
-        chunkIndex: i,
-        content: chunks[i],
-        embeddingJson: JSON.stringify(hashEmbed(chunks[i])),
-      });
-      count += 1;
+    const sub = chunkText(content);
+    for (let i = 0; i < sub.length; i += 1) {
+      batch.push({ source: "vault", path: rel, chunkIndex: i, content: sub[i]! });
     }
-    if (batch.length >= 200) {
-      await prisma.memoryChunk.createMany({ data: batch.splice(0) });
-    }
+    if (batch.length >= 200) await flush();
   }
-  if (batch.length > 0) await prisma.memoryChunk.createMany({ data: batch });
+  await flush();
+  if (vectorCount() === 0) {
+    // no vectors went into the ANN table — rebuild from what we persisted
+    await rebuildVectorIndex().catch(() => undefined);
+  }
   invalidateMemoryIndex();
   return count;
 }
@@ -84,10 +142,8 @@ let cachedIndex: MemoryIndexEntry[] | null = null;
 let loadingIndex: Promise<MemoryIndexEntry[]> | null = null;
 
 /**
- * Lazy in-memory index of the most recent 3000 memory chunks. Preserves the
- * exact candidate set searchMemory would have queried, but loads + parses
- * embeddings once instead of per search — this removes the 3000-row fetch and
- * 3000 JSON.parse calls from every chat turn.
+ * Lazy in-memory index of the most recent 3000 memory chunks. Only used when
+ * the ANN table is unavailable/empty — the fast path searches vec0 directly.
  */
 async function memoryIndex(): Promise<MemoryIndexEntry[]> {
   if (cachedIndex !== null) return cachedIndex;
@@ -110,7 +166,10 @@ async function memoryIndex(): Promise<MemoryIndexEntry[]> {
         source: row.source,
         path: row.path,
         content: row.content,
-        vector: Float32Array.from(vec),
+        vector:
+          vec.length > 0
+            ? Float32Array.from(vec)
+            : Float32Array.from(hashEmbed(row.content)),
         createdMs: row.createdAt.getTime(),
       };
     });
@@ -131,17 +190,50 @@ export function invalidateMemoryIndex(): void {
 // pay the initial load + embed-parse cost.
 void memoryIndex().catch(() => undefined);
 
-/** Hybrid retrieval: vector cosine (60%) + keyword overlap (40%). */
+/** Hybrid retrieval: vector similarity (ANN) + keyword overlap + recency. */
 export async function searchMemory(
   query: string,
   opts: { source?: string; limit?: number } = {},
 ): Promise<MemoryHit[]> {
   const limit = opts.limit ?? 6;
-  const queryVec = Float32Array.from(hashEmbed(query));
+  const queryEmbed = await embedQuery(query);
+
+  // Fast path: ANN over the vec0 table.
+  if (annReady(queryEmbed.length)) {
+    const approx = searchVectors(queryEmbed, limit * 4);
+    if (approx.length > 0) {
+      const ids = approx.map((a) => a.id);
+      const rows = await prisma.memoryChunk.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, source: true, path: true, content: true, createdAt: true },
+      });
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      const scored = approx
+        .map((a) => {
+          const row = byId.get(a.id);
+          if (!row) return null;
+          if (opts.source && row.source !== opts.source) return null;
+          const kwScore = keywordScore(query, row.content);
+          const ageDays = (Date.now() - row.createdAt.getTime()) / 86_400_000;
+          const recency = Math.exp(-ageDays / 30);
+          return {
+            id: row.id,
+            path: row.path,
+            content: row.content.slice(0, 600),
+            score: a.similarity * 0.5 + kwScore * 0.4 + recency * 0.1,
+          };
+        })
+        .filter((x): x is MemoryHit => x !== null);
+      scored.sort((a, b) => b.score - a.score);
+      return scored.filter((hit) => hit.score > 0.05).slice(0, limit);
+    }
+  }
+
+  // Fallback: brute-force cosine over the in-memory index.
   const entries = await memoryIndex();
   const base = opts.source ? entries.filter((e) => e.source === opts.source) : entries;
   const scored = base.map((entry) => {
-    const vecScore = entry.vector.length > 0 ? cosine(queryVec, entry.vector) : 0;
+    const vecScore = entry.vector.length > 0 ? cosine(queryEmbed, entry.vector) : 0;
     const kwScore = keywordScore(query, entry.content);
     const ageDays = (Date.now() - entry.createdMs) / 86_400_000;
     const recency = Math.exp(-ageDays / 30);
@@ -154,6 +246,25 @@ export async function searchMemory(
   });
   scored.sort((a, b) => b.score - a.score);
   return scored.filter((hit) => hit.score > 0.05).slice(0, limit);
+}
+
+/** Embed a single query string with the active embedder (hash fallback). */
+async function embedQuery(text: string): Promise<Float32Array> {
+  const embedder = activeEmbedder();
+  if (embedder.dim === 256) return Float32Array.from(hashEmbed(text));
+  try {
+    const got = await embedQueryProvider(text);
+    return got ?? Float32Array.from(hashEmbed(text));
+  } catch {
+    return Float32Array.from(hashEmbed(text));
+  }
+}
+
+async function embedQueryProvider(text: string): Promise<Float32Array | null> {
+  const { env } = await import("../lib/env");
+  const { embed } = await import("@xtiand/mjane-core");
+  const vectors = await embed(env.embeddingsBaseUrl, env.embeddingsApiKey, [text]);
+  return vectors && vectors.length === 1 ? Float32Array.from(vectors[0]!) : null;
 }
 
 /**
@@ -174,17 +285,28 @@ export async function indexConversation(
   invalidateMemoryIndex();
   await prisma.memoryChunk.deleteMany({ where: { source: "conversation", path: relPath } });
 
-  const chunks = chunkText(transcript).filter((c) => c.trim().length >= 40);
-  if (chunks.length === 0) return 0;
-  await prisma.memoryChunk.createMany({
-    data: chunks.map((content, chunkIndex) => ({
+  const sub = chunkText(transcript).filter((c) => c.trim().length >= 40);
+  if (sub.length === 0) return 0;
+  const count = await storeChunks(
+    sub.map((content, chunkIndex) => ({
       source: "conversation",
       path: relPath,
       chunkIndex,
       content,
-      embeddingJson: JSON.stringify(hashEmbed(content)),
     })),
-  });
+  );
   invalidateMemoryIndex();
-  return chunks.length;
+  return count;
+}
+
+/** Remove the whole memory index (vault + conversations) and its ANN table. */
+export async function clearMemory(): Promise<void> {
+  invalidateMemoryIndex();
+  await prisma.memoryChunk.deleteMany({});
+  dropVectorIndex();
+}
+
+/** Number of vectors in the ANN table (0 = table missing/empty). */
+export function annVectorCount(): number {
+  return vectorCount();
 }

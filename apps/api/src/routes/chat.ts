@@ -6,12 +6,22 @@ import {
   buildRegistry,
   buildSystemPrompt,
   connectEnabledMcpServers,
+  isChatStyle,
   loadHistory,
   resolveProvider,
+  type ChatStyle,
 } from "../services/agent-service";
 import { env } from "../lib/env";
-import { indexConversation } from "../services/memory";
+import { indexConversation, searchMemory } from "../services/memory";
 import { imagePayloadFromResult, storeMcpImage } from "../services/mcp-images";
+import {
+  feedbackFromGrade,
+  gradeAnswer,
+  qualitySettings,
+  resolveJudgeProvider,
+  reviseAnswer,
+} from "../services/critic";
+import { createRunRecord } from "../services/run-record";
 import {
   finishPipelineRun,
   getPipelineState,
@@ -50,6 +60,7 @@ chatRouter.get("/:id/messages", async (req, res): Promise<void> => {
   const rows = await prisma.message.findMany({
     where: { conversationId: id },
     orderBy: { id: "asc" },
+    include: { feedback: true },
   });
   res.json(
     rows.map((row) => ({
@@ -58,6 +69,12 @@ chatRouter.get("/:id/messages", async (req, res): Promise<void> => {
       content: row.content,
       toolCalls:
         row.toolCallsJson !== null ? (JSON.parse(row.toolCallsJson) as ToolCallDto[]) : [],
+      qualityScore: row.qualityScore,
+      qualityFlags: row.qualityFlags !== null ? (JSON.parse(row.qualityFlags) as string[]) : [],
+      grounded: row.grounded,
+      qualityRevisions: row.qualityRevisions,
+      latencyMs: row.latencyMs,
+      feedback: row.feedback ? { vote: row.feedback.vote, note: row.feedback.note } : null,
       createdAt: row.createdAt.toISOString(),
     })),
   );
@@ -82,6 +99,8 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
     ["image", "animation", "data"].includes(outputRaw)
       ? (outputRaw as "image" | "animation" | "data")
       : "text";
+  const styleRaw = req.body?.["style"];
+  const style: ChatStyle = isChatStyle(styleRaw) ? styleRaw : "balanced";
   const images = Array.isArray(req.body?.["images"])
     ? (req.body["images"] as unknown[]).filter((i): i is string => typeof i === "string").slice(0, 4)
     : [];
@@ -94,6 +113,8 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
 
   const mcpClients: import("@xtiand/mcp-bridge").McpClientLike[] = [];
   let runId = 0;
+  let runStartedMs = Date.now();
+  let provider: Awaited<ReturnType<typeof resolveProvider>> | null = null;
   const seenArtifacts = new Set<number>();
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -105,9 +126,10 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
   };
 
   try {
-    const provider = await resolveProvider(
+    provider = await resolveProvider(
       typeof req.body?.["model"] === "string" ? req.body["model"] : null,
     );
+    runStartedMs = Date.now();
 
     runId = startPipelineRun({
       conversationId: id,
@@ -167,7 +189,7 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
           /image|img|photo|picture/.test(t.name) || /image|img|photo|visual/.test(t.description),
       )
       .map((t) => `mcp_${t.name}`);
-    const systemPrompt = await buildSystemPrompt(id, content, mode, output, mcpImageTools);
+    const systemPrompt = await buildSystemPrompt(id, content, mode, output, mcpImageTools, style);
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
       ...history.slice(0, -1),
@@ -286,7 +308,14 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
       onToken: () => undefined,
     });
     const finalAssistant = [...result.messages].reverse().find((m) => m.role === "assistant");
-    await prisma.message.create({
+    const latencyMs = Date.now() - runStartedMs;
+    const tokenEstimate = result.messages.reduce(
+      (acc, m) => acc + Math.ceil((m.content?.length ?? 0) / 4),
+      0,
+    );
+    const modelCalls = result.messages.filter((m) => m.role === "assistant").length;
+
+    let assistantMessage = await prisma.message.create({
       data: {
         conversationId: id,
         role: "assistant",
@@ -295,8 +324,118 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
           finalAssistant?.toolCalls && finalAssistant.toolCalls.length > 0
             ? JSON.stringify(finalAssistant.toolCalls)
             : null,
+        latencyMs,
+        tokensEstimated: tokenEstimate,
       },
     });
+    const assistantId = assistantMessage.id;
+
+    // Quality critic: grade the answer, then optionally revise it in place.
+    let qualityScore: number | null = null;
+    let qualityFlags: string[] = [];
+    let grounded = false;
+    let revisions = 0;
+    const qaSettings = await qualitySettings().catch(() => ({
+      criticEnabled: true,
+      threshold: 60,
+      maxRevisions: 2,
+    }));
+    const finalText = (finalAssistant?.content ?? "").trim();
+    const isTextAnswer = output === "text" && finalText.length > 0;
+
+    try {
+      if (qaSettings.criticEnabled && isTextAnswer) {
+        const memories = (await searchMemory(content, { limit: 5 })).map((hit) => ({
+          path: hit.path,
+          content: hit.content,
+        }));
+        const judgeProvider = await resolveJudgeProvider();
+        let grade = await gradeAnswer({
+          provider: judgeProvider,
+          question: content,
+          answer: assistantMessage.content,
+          memories,
+        });
+        const applyGrade = (g: typeof grade): void => {
+          qualityScore = g.score;
+          qualityFlags = g.flags;
+          grounded = g.grounded;
+        };
+        applyGrade(grade);
+        stepPipeline(runId, {
+          conversationId: id,
+          stage: "synthesize",
+          kind: "critic",
+          label: "Quality critic",
+          detail:
+            grade.score !== null
+              ? `score ${grade.score}/100 · ${grade.grounded ? "grounded" : "not grounded"}${
+                  grade.flags.length > 0 ? ` · ${grade.flags.join(", ")}` : ""
+                }`
+              : "grade failed",
+          running: false,
+        });
+        send("agent", {
+          type: "critic",
+          data: {
+            score: grade.score,
+            grounded: grade.grounded,
+            flags: grade.flags,
+            verdict: grade.verdict,
+            model: judgeProvider.model,
+          },
+        });
+
+        const canRevise = mode === "chat" && qaSettings.maxRevisions > 0;
+        while (
+          canRevise &&
+          grade.score !== null &&
+          grade.score < qaSettings.threshold &&
+          revisions < qaSettings.maxRevisions
+        ) {
+          const revised = await reviseAnswer({
+            provider: judgeProvider,
+            question: content,
+            answer: assistantMessage.content,
+            memories,
+            feedback: feedbackFromGrade(grade),
+          });
+          if (revised.failed) break;
+          revisions += 1;
+          assistantMessage = await prisma.message.update({
+            where: { id: assistantId },
+            data: { content: revised.content },
+          });
+          grade = await gradeAnswer({
+            provider: judgeProvider,
+            question: content,
+            answer: revised.content,
+            memories,
+          });
+          applyGrade(grade);
+          send("agent", { type: "revised", data: revised.content });
+          if (grade.score === null || grade.score >= qaSettings.threshold) break;
+        }
+      }
+      await prisma.message
+        .update({
+          where: { id: assistantId },
+          data: {
+            qualityScore,
+            qualityFlags: qualityFlags.length > 0 ? JSON.stringify(qualityFlags) : null,
+            grounded,
+            qualityRevisions: revisions,
+          },
+        })
+        .catch(() => undefined);
+    } catch (qaError: unknown) {
+      // critic must never break the chat; keep latencies at least
+      console.error("quality critic failed:", qaError);
+      await prisma.message
+        .update({ where: { id: assistantId }, data: { latencyMs, tokensEstimated: tokenEstimate } })
+        .catch(() => undefined);
+    }
+
     // long-term memory: index this exchange so future chats can recall it
     try {
       const turns = await prisma.message.findMany({
@@ -309,7 +448,26 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
       console.error("conversation indexing failed:", memoryError);
     }
 
-    send("done", { ok: true });
+    await createRunRecord({
+      runId,
+      conversationId: id,
+      prompt: content,
+      provider: provider!.providerId > 0 ? String(provider!.providerId) : "?",
+      model: provider!.model,
+      mode,
+      outputKind: output,
+      latencyMs,
+      tokensEstimated: tokenEstimate,
+      modelCalls,
+      totalArtifacts: seenArtifacts.size,
+      grounded,
+      qualityScore,
+      qualityFlags: qualityFlags.length > 0 ? JSON.stringify(qualityFlags) : null,
+      revisions,
+      status: "done",
+    }).catch(() => undefined);
+
+    send("done", { ok: true, messageId: assistantId });
     if (runId) finishPipelineRun(runId, "done");
   } catch (error: unknown) {
     send("agent", {
@@ -317,7 +475,27 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
       data: error instanceof Error ? error.message : String(error),
     });
     send("done", { ok: false });
-    if (runId) finishPipelineRun(runId, "error");
+    if (runId) {
+      await createRunRecord({
+        runId,
+        conversationId: id,
+        prompt: content,
+        provider: typeof provider?.providerId === "number" ? String(provider.providerId) : "?",
+        model: typeof provider?.model === "string" ? provider.model : "?",
+        mode,
+        outputKind: output,
+        latencyMs: Date.now() - runStartedMs,
+        tokensEstimated: 0,
+        modelCalls: 0,
+        totalArtifacts: seenArtifacts.size,
+        grounded: false,
+        qualityScore: null,
+        qualityFlags: null,
+        revisions: 0,
+        status: "error",
+      }).catch(() => undefined);
+      finishPipelineRun(runId, "error");
+    }
   } finally {
     for (const client of mcpClients) client.dispose();
     res.end();

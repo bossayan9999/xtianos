@@ -54,6 +54,11 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       onToken: input.onToken
         ? (delta) => input.onStep({ type: "token", data: delta })
         : undefined,
+      onVisionStripped: () =>
+        input.onStep({
+          type: "status",
+          data: "⚠ this model can't receive images — they were removed and it answered text-only. For photos/vision, switch to minimax/minimax-m3:free (a free vision model).",
+        }),
     });
 
     messages.push({
@@ -62,11 +67,14 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       toolCalls: reply.toolCalls.length > 0 ? reply.toolCalls : undefined,
     });
 
-    if (reply.content.length > 0) {
-      input.onStep({ type: "message", data: reply.content });
-    }
-
     if (reply.toolCalls.length === 0) {
+      // Concluding turn — emit ONE authoritative message. Intermediate
+      // tool-calling turns already streamed their text live via token events;
+      // only announce the final answer here so the UI never accumulates or
+      // duplicates per-turn partial text (which previously repeated answers).
+      if (reply.content.length > 0) {
+        input.onStep({ type: "message", data: reply.content });
+      }
       // Some models stop dead after tool results without ever answering.
       // Nudge exactly once so the user always gets a reply.
       if (reply.content.trim().length === 0 && !nudged) {

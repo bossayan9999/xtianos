@@ -24,6 +24,12 @@ interface ChatMessageView {
   content: string
   meta?: string[]
   artifacts?: number[]
+  qualityScore?: number | null
+  qualityFlags?: string[]
+  grounded?: boolean
+  qualityRevisions?: number
+  latencyMs?: number | null
+  feedback?: { vote: number; note?: string | null } | null
 }
 
 interface StepData {
@@ -49,6 +55,43 @@ export function detectOutputFormat(content: string): 'text' | 'image' | 'animati
   return 'text'
 }
 
+export type ChatStyle = 'speed' | 'balanced' | 'structured' | 'deep'
+
+export const STYLE_LABELS: Record<ChatStyle | 'auto', string> = {
+  auto: '✨ Auto',
+  speed: '⚡ Speed',
+  balanced: '⚖️ Balanced',
+  structured: '📋 Structured',
+  deep: '🧠 Deep reasoning',
+}
+
+/**
+ * Auto-picks the response style (prompt technique) from the user's message:
+ * reasoning questions -> deep, terse/urgent -> speed, structured asks -> structured.
+ */
+export function detectResponseStyle(content: string): ChatStyle {
+  const t = content.trim()
+  if (!t) return 'balanced'
+  const lower = t.toLowerCase()
+  if (
+    /(\bwhy\b|\bexplain\b|\banalyz|analys|\bevaluate\b|\bcompare\b|\bcontrast\b|\btradeoff\b|\bconsider\b|\bdecide\b|\bshould\b|\bwhether\b|\brecommend\b|\bverdict\b|root cause|\binvestigat\b|\bdebug\b|\boptimiz|\bweigh\b|\bjustify\b|\bprove\b|\bderiv|\breason\b|\bhypothes|implication|\bdilemma\b|\bscenario\b|\bassumptions?\b|\btrade[- ]offs?\b|pros\s+and\s+cons|\bcost[^.!?]{0,40}(benefit|risk))\b/.test(lower)
+  ) {
+    return 'deep'
+  }
+  if (
+    /\b(quick|quickly|fast|brief|briefly|concise|concisely|tl;?dr|\basap\b|in short|one[- ]line\b|one sentence|short answer|few words|summarize in (one|a) |-?1-2 sentences)\b/.test(lower) ||
+    t.length <= 16
+  ) {
+    return 'speed'
+  }
+  if (
+    /\b(list|steps?|step-?by-?step|guide|checklist|breakdown|break down|table|matrix|template|format|structure|overview|summary|outline|bullet points|options|alternatives|plan|roadmap|method|how (do|to|can) i|top\s+\d+|categor|sections?|headings?|schedule|agenda|rundown)\b/.test(lower)
+  ) {
+    return 'structured'
+  }
+  return 'balanced'
+}
+
 export function ChatPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
@@ -59,6 +102,14 @@ export function ChatPage() {
   const [listening, setListening] = useState(false)
   const [autoSpeak, setAutoSpeak] = useState(speakEnabled())
   const [mode, setMode] = useState<ChatMode>('chat')
+  const [style, setStyle] = useState<ChatStyle | 'auto'>(
+    () => (localStorage.getItem('xt.chatStyle') as ChatStyle | 'auto' | null) ?? 'auto',
+  )
+  const [lastStyle, setLastStyle] = useState<ChatStyle>('balanced')
+  const changeStyle = (v: ChatStyle | 'auto'): void => {
+    setStyle(v)
+    localStorage.setItem('xt.chatStyle', v)
+  }
   const [activeStage, setActiveStage] = useState<string | null>(null)
   const [toolCount, setToolCount] = useState(0)
   const [showVoiceSettings, setShowVoiceSettings] = useState(false)
@@ -70,6 +121,7 @@ export function ChatPage() {
   const dictationRef = useRef<DictationHandle | null>(null)
   const assistantTextRef = useRef('')
   const streamedRef = useRef(false)
+  const finalMessageId = useRef<number | null>(null)
 
   const loadConversations = (): void => {
     api.get<ConversationSummary[]>('/api/chat').then(setConversations).catch(() => undefined)
@@ -88,9 +140,27 @@ export function ChatPage() {
       id: number
       role: string
       content: string
+      qualityScore: number | null
+      qualityFlags: string | null
+      grounded: boolean
+      qualityRevisions: number
+      latencyMs: number | null
+      feedback: { vote: number; note?: string | null } | null
     }
     api.get<Row[]>(`/api/chat/${activeId}/messages`)
-      .then((rows) => setMessages(rows.map((r) => ({ id: r.id, role: r.role, content: r.content }))))
+      .then((rows) =>
+        setMessages(rows.map((r) => ({
+          id: r.id,
+          role: r.role,
+          content: r.content,
+          qualityScore: r.qualityScore,
+          qualityFlags: r.qualityFlags ? (JSON.parse(r.qualityFlags) as string[]) : [],
+          grounded: r.grounded,
+          qualityRevisions: r.qualityRevisions,
+          latencyMs: r.latencyMs,
+          feedback: r.feedback ?? null,
+        }))),
+      )
       .catch(() => undefined)
   }, [activeId])
 
@@ -121,11 +191,14 @@ export function ChatPage() {
     const autoFormat = detectOutputFormat(content)
     const effFormat: typeof outputFormat = autoFormat !== 'text' ? autoFormat : outputFormat
     if (effFormat !== outputFormat) setOutputFormat(effFormat)
+    const effStyle: ChatStyle = style === 'auto' ? detectResponseStyle(content) : style
+    setLastStyle(effStyle)
     setActiveStage('memory')
     setToolCount(0)
     setPendingImage(null)
     assistantTextRef.current = ''
     streamedRef.current = false
+    finalMessageId.current = null
     setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', content }])
     const assistantId = `a-${Date.now()}`
     setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '' }])
@@ -158,9 +231,16 @@ export function ChatPage() {
         }),
       )
     }
+    const applyQuality = (partial: Partial<ChatMessageView>): void => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId || m.id === finalMessageId.current ? { ...m, ...partial } : m,
+        ),
+      )
+    }
 
     try {
-      await sseStream(`/api/chat/${conversationId}/stream`, { content, model: modelSpec, mode, output: effFormat, images: pendingImage ? [pendingImage] : undefined }, (_e, data) => {
+      await sseStream(`/api/chat/${conversationId}/stream`, { content, model: modelSpec, mode, style: effStyle, output: effFormat, images: pendingImage ? [pendingImage] : undefined }, (_e, data) => {
         const step = data as StepData
         if (step.type === 'token') {
           // token-by-token streaming from the provider
@@ -170,13 +250,27 @@ export function ChatPage() {
           appendAssistant(delta)
         } else if (step.type === 'message') {
           setActiveStage('synthesize')
-          assistantTextRef.current += String(step.data)
-          // If we already streamed tokens, this is the authoritative full reply —
-          // replace the accumulated stream to avoid duplication.
-          if (streamedRef.current) replaceAssistant(String(step.data))
-          else appendAssistant(String(step.data))
+          if (streamedRef.current) {
+            // Authoritative full reply — replace both the DOM and the accumulated
+            // ref so the final spoken text never duplicates earlier turns.
+            assistantTextRef.current = String(step.data)
+            replaceAssistant(assistantTextRef.current)
+          } else {
+            assistantTextRef.current += String(step.data)
+            appendAssistant(String(step.data))
+          }
+        } else if (step.type === 'revised') {
+          // Quality critic produced a corrected answer — replace the current reply
+          // and reset the ref so we show/speak the revised text, not the old one.
+          assistantTextRef.current = String(step.data)
+          replaceAssistant(assistantTextRef.current)
+          setMeta((prev) => [...(Array.isArray(prev) ? prev : []), '✓ revised by critic'])
         } else if (step.type === 'status') {
-          setMeta([String(step.data)])
+          setMeta((prev) => {
+            const line = String(step.data)
+            if (line.startsWith('⚠')) return [...(Array.isArray(prev) ? prev : []), line]
+            return [line]
+          })
           setActiveStage((prev) => (prev === 'memory' ? 'plan' : prev))
         } else if (step.type === 'delegate') {
           const delegate = step.data as { agentName: string; task: string }
@@ -217,6 +311,36 @@ export function ChatPage() {
         } else if (step.type === 'artifact') {
           const art = step.data as { id?: number }
           if (typeof art.id === 'number' && Number.isFinite(art.id)) pushArtifact(art.id)
+        } else if (step.type === 'critic') {
+          const critic = step.data as {
+            score: number | null
+            grounded: boolean
+            flags: string[]
+            verdict?: string
+            model?: string
+          }
+          applyQuality({
+            qualityScore: critic.score,
+            grounded: critic.grounded,
+            qualityFlags: critic.flags,
+          })
+          setMeta((prev) => [
+            ...(Array.isArray(prev) ? prev : []),
+            `🧪 critic: ${critic.score ?? 'n/a'}/100 · ${critic.grounded ? 'grounded' : 'not grounded'}${
+              critic.flags.length > 0 ? ` · ${critic.flags.join(', ')}` : ''
+            }`,
+          ])
+        } else if (step.type === 'revised') {
+          replaceAssistant(String(step.data))
+          setMeta((prev) => [...(Array.isArray(prev) ? prev : []), '🔁 auto-revised'])
+        } else if (step.type === 'done') {
+          const done = step.data as { ok?: boolean; messageId?: number }
+          if (typeof done.messageId === 'number') {
+            finalMessageId.current = done.messageId
+            setMessages((prev) =>
+              prev.map((m) => (m.id === assistantId ? { ...m, id: done.messageId as number } : m)),
+            )
+          }
         } else if (step.type === 'error') {
           appendAssistant(`\n\n⚠️ ${String(step.data)}`)
         }
@@ -270,6 +394,19 @@ export function ChatPage() {
   const changeDefaultModel = (spec: string): void => {
     setModelSpec(spec)
     void api.put('/api/providers/default-model', { model: spec }).catch(() => undefined)
+  }
+
+  const submitFeedback = (messageId: number | string, vote: number): void => {
+    if (typeof messageId !== 'number') return
+    const note = vote < 0 ? (window.prompt('What went wrong? (optional)') ?? '') : ''
+    void api
+      .post<{ ok: boolean }>('/api/quality/feedback', { messageId, vote, note })
+      .then(() => {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === messageId ? { ...m, feedback: { vote, note: note.length ? note : undefined } } : m)),
+        )
+      })
+      .catch(() => undefined)
   }
 
   return (
@@ -329,6 +466,18 @@ export function ChatPage() {
           </button>
           <select
             className="output-select"
+            title="Response style (or Auto — picks by your message)"
+            value={style}
+            onChange={(e) => changeStyle(e.target.value as ChatStyle | 'auto')}
+          >
+            <option value="auto">✨ Auto</option>
+            <option value="speed">⚡ Speed</option>
+            <option value="balanced">⚖️ Balanced</option>
+            <option value="structured">📋 Structured</option>
+            <option value="deep">🧠 Deep reasoning</option>
+          </select>
+          <select
+            className="output-select"
             title="Answer format"
             value={outputFormat}
             onChange={(e) => {
@@ -342,7 +491,7 @@ export function ChatPage() {
             <option value="animation">🎬 Animation</option>
             <option value="data">📊 Data</option>
           </select>
-          <span className="chat-hint">mjane · plan → act → observe loop</span>
+          <span className="chat-hint">style {STYLE_LABELS[lastStyle]} · mjane · plan → act → observe loop</span>
         </div>
 
         <div className="chat-messages">
@@ -361,6 +510,40 @@ export function ChatPage() {
               <article key={m.id} className={`bubble bubble--${m.role}`}>
                 {m.meta && m.meta.length > 0 && (
                   <pre className="bubble-meta">{m.meta.join('\n')}</pre>
+                )}
+                {m.role === 'assistant' && (
+                  <div className="bubble-qa">
+                    {typeof m.qualityScore === 'number' && (
+                      <span
+                        className={`qa-badge ${
+                          m.qualityScore >= 80 ? 'qa-badge--good' : m.qualityScore >= 60 ? 'qa-badge--mid' : 'qa-badge--bad'
+                        }`}
+                        title={Array.isArray(m.qualityFlags) && m.qualityFlags.length ? m.qualityFlags.join(', ') : undefined}
+                      >
+                        {m.qualityScore >= 80 ? '✓' : m.qualityScore >= 60 ? '△' : '✗'} {m.qualityScore}/100
+                        {m.grounded && ' · grounded'}
+                        {(m.qualityRevisions ?? 0) > 0 && ` · revised ×${m.qualityRevisions}`}
+                      </span>
+                    )}
+                    <span className="qa-thumbs">
+                      <button
+                        type="button"
+                        className={`qa-thumb ${m.feedback?.vote === 1 ? 'active-up' : ''}`}
+                        title="Good answer"
+                        onClick={() => submitFeedback(m.id, 1)}
+                      >
+                        👍
+                      </button>
+                      <button
+                        type="button"
+                        className={`qa-thumb ${m.feedback?.vote === -1 ? 'active-down' : ''}`}
+                        title="Bad answer — flags it for review"
+                        onClick={() => submitFeedback(m.id, -1)}
+                      >
+                        👎
+                      </button>
+                    </span>
+                  </div>
                 )}
                 {artifactIds.map((id) => (
                   <img

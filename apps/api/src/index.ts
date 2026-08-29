@@ -16,6 +16,7 @@ import { mcpRouter, memoryRouter } from "./routes/mcp";
 import { voiceRouter } from "./routes/voice";
 import { tunnelRouter } from "./routes/tunnel";
 import { agentsRouter } from "./routes/agents";
+import { qualityRouter } from "./routes/quality";
 import { housekeepingRouter } from "./routes/housekeeping";
 import { ensureSkillsRoot } from "./services/agent-service";
 import { startHousekeeper } from "./services/housekeeper";
@@ -49,7 +50,10 @@ app.use("/api/memory", memoryRouter);
 app.use("/api/voice", voiceRouter);
 app.use("/api/tunnel", tunnelRouter);
 app.use("/api/agents", agentsRouter);
+app.use("/api/quality", qualityRouter);
 app.use("/api/housekeeping", housekeepingRouter);
+
+// route ordering note: /api/quality is versioned via /api/quality/... only
 
 // Global error handler — catches synchronous throws and (via asyncWrapper) rejected async handlers.
 app.use(
@@ -170,10 +174,11 @@ async function bootstrap(): Promise<void> {
     {
       name: "coder",
       displayName: "Coder",
-      description: "Code writing, file operations, workspace tasks, and scripting",
-      personality: "Precise, efficient, pragmatic. Writes clean code.",
-      systemPromptAdd: "You are a coding specialist. Use brain_write, workspace_write, shell_exec, and file tools to implement solutions. Verify your work.",
-      toolsAllowed: "brain_write,workspace_write,shell_exec",
+      description: "Code writing, fixing and debugging the xtiandOS codebase, file operations, workspace tasks, and scripting",
+      personality: "Precise, efficient, pragmatic. Writes clean code. Reproduces bugs before fixing them.",
+      systemPromptAdd:
+        "You are a coding specialist and the xtiandOS bugfixer. The xtiandOS source lives in the vault at BRAIN/Code/xtiandOS/ (index note: BRAIN/Code/xtiandOS/README.md; repo mirror: BRAIN/Code/xtiandOS/repo; live copy: C:/Users/Christian/xtiandOS). For any xtiandOS fix/debug task: first brain_read the index note and the relevant repo files, then reproduce (shell_exec: npm run typecheck in C:/Users/Christian/xtiandOS, npm test -w apps/api, npm test -w apps/web), fix minimally following the repo's conventions, re-run typecheck/tests, and report what was wrong → what changed → how verified. Use brain_write, workspace_write, shell_exec, and brain_read/brain_search for context. Never print or store secrets from .env.",
+      toolsAllowed: "brain_write,workspace_write,shell_exec,brain_read,brain_search",
       color: "#e0af68",
       icon: "💻",
       orbitRadius: 140,

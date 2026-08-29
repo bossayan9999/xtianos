@@ -18,6 +18,7 @@ export async function providerChat(input: {
   tools: ToolDef[];
   onToken?: (delta: string) => void;
   onStreamStart?: () => void;
+  onVisionStripped?: () => void;
 }): Promise<{ content: string; toolCalls: ToolCallDto[] }> {
   const cacheKey = stableKey([input.kind, input.baseUrl, input.model, input.messages]);
   const cached = chatCache.get(cacheKey);
@@ -53,6 +54,7 @@ export async function providerChat(input: {
           : m,
       );
       reply = await call(stripped);
+      input.onVisionStripped?.();
     } else {
       throw error;
     }
@@ -93,6 +95,8 @@ export function starterCatalog(): ModelInfo[] {
     "qwen/qwen3-235b-a22b",
     "mistralai/mistral-large-2411",
     "x-ai/grok-3",
+    "minimax/minimax-m3:free",
+    "google/gemma-4-26b-a4b-it:free",
   ].map((id) => ({
     id,
     label: `OpenRouter ${id}`,

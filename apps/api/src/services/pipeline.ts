@@ -21,6 +21,7 @@ export interface PipelineStep {
     | "delegate"
     | "artifact"
     | "message"
+    | "critic"
     | "error"
     | "run-end";
   label: string;

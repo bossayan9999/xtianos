@@ -205,6 +205,22 @@ const MODE_DIRECTIVES: Record<string, string> = {
     "MODE build — execute the agreed plan: use workspace_write, shell_exec, task_create and other tools to actually implement. Verify your work before declaring done.",
 };
 
+export type ChatStyle = "speed" | "balanced" | "structured" | "deep";
+
+export function isChatStyle(value: unknown): value is ChatStyle {
+  return value === "speed" || value === "balanced" || value === "structured" || value === "deep";
+}
+
+const STYLE_DIRECTIVES: Record<ChatStyle, string> = {
+  balanced: "",
+  speed:
+    "STYLE speed — zero-shot, get to the point, high signal. Reply in at most 1-3 short plain sentences with no preamble, no markdown headings, no numbered lists, no bullets, no bold lead-in, and no 'takeaway' line. Give the first correct answer directly; skip elaborating unless explicitly asked.",
+  structured:
+    "STYLE structured — few-shot formatting. Always answer with a consistent, scannable structure: one one-sentence intro (the takeaway), then clear sections (## headings) or a bullet list / table where it fits, ending with a one-line 'Next step' or action. Mirror any structure the user's message implies (numbers, columns, steps), and keep the same shape for repeated questions.",
+  deep:
+    "STYLE deep — chain-of-thought reasoning. Break the problem into explicit steps, reason carefully and show the trail of reasoning: enumerate options, weigh pros/cons, then conclude with a recommended answer and a quick sanity-check/verification. Take the time to be thorough and precise; it's fine to be longer.",
+};
+
 const OUTPUT_DIRECTIVES: Record<string, string> = {
   text: "",
   image:
@@ -221,6 +237,7 @@ export async function buildSystemPrompt(
   mode: "chat" | "plan" | "build" = "chat",
   output: "text" | "image" | "animation" | "data" = "text",
   mcpImageTools: string[] = [],
+  style: ChatStyle = "balanced",
 ): Promise<string> {
   const parts: string[] = [
     "You are mjane, the copilot manager of xtiandOS — an agentic home-lab web OS on Kali Linux.",
@@ -231,6 +248,8 @@ export async function buildSystemPrompt(
     "You are the general — you have specialized sub-agents. Use list_agents to see who is available, then delegate tasks with delegate_task. Decompose complex goals into subtasks and assign each to the best-suited agent. You can delegate multiple tasks in parallel.",
   ];
   parts.push(MODE_DIRECTIVES[mode] ?? MODE_DIRECTIVES["chat"]);
+  const styleDirective = STYLE_DIRECTIVES[style] ?? "";
+  if (styleDirective) parts.push(styleDirective);
   let outDirective = OUTPUT_DIRECTIVES[output];
   if (outDirective) {
     if (output === "image" && mcpImageTools.length > 0) {
