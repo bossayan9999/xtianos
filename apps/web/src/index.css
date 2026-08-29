@@ -110,6 +110,16 @@ input:focus, textarea:focus { outline: none; border-color: var(--blue); }
 .clean-report { border: 1px solid var(--amber); border-radius: 10px; padding: 12px 16px; margin-bottom: 12px; background: rgba(224,175,104,.05); }
 .clean-report h3 { margin-top: 0; }
 
+/* code browser */
+.brain-editor__bar .crumb { border: none; background: transparent; color: var(--accent); padding: 0 2px; font-size: 12px; }
+.brain-editor__bar .crumb.root { color: var(--text-dim); }
+.code-content {
+  flex: 1; min-height: 55vh; overflow: auto; white-space: pre; tab-size: 2;
+  background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; font-size: 12px; line-height: 1.5; color: var(--text);
+}
+.brain-tree button.active { border-color: var(--border); color: var(--accent); }
+
 /* projects */
 .projects-page { display: flex; gap: 14px; }
 .projects-sidebar { width: 240px; flex-shrink: 0; }

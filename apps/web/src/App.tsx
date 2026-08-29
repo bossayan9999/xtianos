@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { ChatPage } from './pages/ChatPage'
 import { HomePage } from './pages/HomePage'
 import { BrainPage } from './pages/BrainPage'
+import { CodePage } from './pages/CodePage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { SkillsPage } from './pages/SkillsPage'
 import { StudioPage } from './pages/StudioPage'
@@ -18,6 +19,7 @@ const TABS = [
   { id: 'home', label: '🎛️ Mission Control', el: HomePage },
   { id: 'agents', label: '🌐 Agents', el: AgentsPage },
   { id: 'brain', label: '🧠 Brain', el: BrainPage },
+  { id: 'code', label: '🔬 Code', el: CodePage },
   { id: 'projects', label: '📋 Projects', el: ProjectsPage },
   { id: 'skills', label: '🧩 Skills & MCP', el: SkillsPage },
   { id: 'studio', label: '🎨 Studio', el: StudioPage },
