@@ -238,6 +238,6 @@ export async function qualitySettings(): Promise<{
   return {
     criticEnabled: (map.get("qa.criticEnabled") ?? "1") !== "0",
     threshold: Math.max(0, Math.min(100, Number.parseInt(map.get("qa.threshold") ?? "60", 10) || 60)),
-    maxRevisions: Math.max(0, Math.min(3, Number.parseInt(map.get("qa.maxRevisions") ?? "2", 10) || 2)),
+    maxRevisions: Math.max(0, Math.min(3, Number.parseInt(map.get("qa.maxRevisions") ?? "1", 10) || 1)),
   };
 }

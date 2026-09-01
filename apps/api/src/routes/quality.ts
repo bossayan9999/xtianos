@@ -30,7 +30,7 @@ const QA_SETTING_KEYS = ["qa.criticEnabled", "qa.threshold", "qa.maxRevisions", 
 const QA_DEFAULTS: Record<string, string> = {
   "qa.criticEnabled": "1",
   "qa.threshold": "60",
-  "qa.maxRevisions": "2",
+  "qa.maxRevisions": "1",
   "qa.judgeModel": "",
 };
 

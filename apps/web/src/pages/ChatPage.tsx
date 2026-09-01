@@ -74,7 +74,7 @@ export function detectResponseStyle(content: string): ChatStyle {
   if (!t) return 'balanced'
   const lower = t.toLowerCase()
   if (
-    /(\bwhy\b|\bexplain\b|\banalyz|analys|\bevaluate\b|\bcompare\b|\bcontrast\b|\btradeoff\b|\bconsider\b|\bdecide\b|\bshould\b|\bwhether\b|\brecommend\b|\bverdict\b|root cause|\binvestigat\b|\bdebug\b|\boptimiz|\bweigh\b|\bjustify\b|\bprove\b|\bderiv|\breason\b|\bhypothes|implication|\bdilemma\b|\bscenario\b|\bassumptions?\b|\btrade[- ]offs?\b|pros\s+and\s+cons|\bcost[^.!?]{0,40}(benefit|risk))\b/.test(lower)
+    /(\bexplain\b|\banalyz|analys|\bevaluate\b|\bcompare\b|\bcontrast\b|\btradeoff\b|\bconsider\b|\bdecide\b|\bshould\b|\bwhether\b|\brecommend\b|\bverdict\b|root cause|\binvestigat\b|\bdebug\b|\boptimiz|\bweigh\b|\bjustify\b|\bprove\b|\bderiv|\bhypothes|implication|\bdilemma\b|\bscenario\b|\bassumptions?\b|\btrade[- ]offs?\b|pros\s+and\s+cons|\bcost[^.!?]{0,40}(benefit|risk))\b/.test(lower)
   ) {
     return 'deep'
   }
@@ -103,7 +103,7 @@ export function ChatPage() {
   const [autoSpeak, setAutoSpeak] = useState(speakEnabled())
   const [mode, setMode] = useState<ChatMode>('chat')
   const [style, setStyle] = useState<ChatStyle | 'auto'>(
-    () => (localStorage.getItem('xt.chatStyle') as ChatStyle | 'auto' | null) ?? 'auto',
+    () => (localStorage.getItem('xt.chatStyle') as ChatStyle | 'auto' | null) ?? 'speed',
   )
   const [lastStyle, setLastStyle] = useState<ChatStyle>('balanced')
   const changeStyle = (v: ChatStyle | 'auto'): void => {

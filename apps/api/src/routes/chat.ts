@@ -148,48 +148,59 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
     }
 
     const registry = await buildRegistry(id);
-    const clients = await connectEnabledMcpServers();
-    mcpClients.push(...clients);
-    for (const client of clients) {
-      for (const tool of client.tools.values()) {
-        registry.register({
-          name: `mcp_${tool.name}`,
-          description: `[MCP] ${tool.description}`,
-          scopes: ["net"],
-          params: [],
-          run: async (
-            args: Record<string, unknown>,
-            ctx: import("@xtiand/mjane-core").ToolContext,
-          ) => {
-            const result = await client.call(tool.name, JSON.stringify(args ?? {}));
-            let image = imagePayloadFromResult(result, ctx.workspaceDir);
-            if (image) {
-              try {
-                const saved = await storeMcpImage(image, ctx, result);
-                ctx.emit({
-                  type: "artifact",
-                  data: { id: saved.id, filename: saved.filename, mime: saved.mime, kind: "image" },
-                });
-                return `${result}\n\nARTIFACT:${saved.id}`;
-              } catch {
-                image = null;
-              }
-            }
-            return result;
-          },
-        });
-      }
-    }
+
+    // Connect MCP servers in the BACKGROUND so they never hold up the first
+    // token. Spawning stdio servers (npx …) on Windows can take seconds; the
+    // run should start streaming immediately and pick up mcp_* tools as each
+    // server finishes connecting (ToolRegistry is a live shared object that
+    // runAgentLoop re-reads every turn). Any server that fails or times out is
+    // skipped without touching the response path.
+    const mcpConnect = connectEnabledMcpServers()
+      .then((clients) => {
+        mcpClients.push(...clients);
+        for (const client of clients) {
+          for (const tool of client.tools.values()) {
+            registry.register({
+              name: `mcp_${tool.name}`,
+              description: `[MCP] ${tool.description}`,
+              scopes: ["net"],
+              params: [],
+              run: async (
+                args: Record<string, unknown>,
+                ctx: import("@xtiand/mjane-core").ToolContext,
+              ) => {
+                const result = await client.call(tool.name, JSON.stringify(args ?? {}));
+                let image = imagePayloadFromResult(result, ctx.workspaceDir);
+                if (image) {
+                  try {
+                    const saved = await storeMcpImage(image, ctx, result);
+                    ctx.emit({
+                      type: "artifact",
+                      data: { id: saved.id, filename: saved.filename, mime: saved.mime, kind: "image" },
+                    });
+                    return `${result}\n\nARTIFACT:${saved.id}`;
+                  } catch {
+                    image = null;
+                  }
+                }
+                return result;
+              },
+            });
+          }
+        }
+        return clients;
+      })
+      .catch((err: unknown) => {
+        console.error("MCP background connect failed (continuing without it):", err);
+        return [] as import("@xtiand/mcp-bridge").McpClientLike[];
+      });
 
     const history = await loadHistory(id);
-    const mcpImageTools = mcpClients
-      .flatMap((c) => [...c.tools.values()])
-      .filter(
-        (t) =>
-          /image|img|photo|picture/.test(t.name) || /image|img|photo|visual/.test(t.description),
-      )
-      .map((t) => `mcp_${t.name}`);
-    const systemPrompt = await buildSystemPrompt(id, content, mode, output, mcpImageTools, style);
+    // Because MCP connects in the background, MCP-hosted image tools aren't
+    // known at system-prompt build time; the image output path falls back to
+    // the built-in image_generate tool, so this only affects which backend is
+    // preferred for image requests, never whether one is produced.
+    const systemPrompt = await buildSystemPrompt(id, content, mode, output, [], style);
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
       ...history.slice(0, -1),
@@ -338,7 +349,7 @@ chatRouter.post("/:id/stream", async (req, res): Promise<void> => {
     const qaSettings = await qualitySettings().catch(() => ({
       criticEnabled: true,
       threshold: 60,
-      maxRevisions: 2,
+      maxRevisions: 1,
     }));
     const finalText = (finalAssistant?.content ?? "").trim();
     const isTextAnswer = output === "text" && finalText.length > 0;

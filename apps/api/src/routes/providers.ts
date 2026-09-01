@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 
 import { prisma } from "../lib/db";
 import { encryptSecret, decryptSecret } from "../lib/env";
+import { clearResolveCache } from "../services/agent-service";
 import { starterCatalog, listModels } from "@xtiand/mjane-core";
 
 export const providersRouter = Router();
@@ -34,6 +35,7 @@ providersRouter.post("/", async (req, res): Promise<void> => {
     },
   });
   res.json({ id: provider.id });
+  clearResolveCache();
 });
 
 providersRouter.patch("/:id/key", async (req, res): Promise<void> => {
@@ -48,12 +50,14 @@ providersRouter.patch("/:id/key", async (req, res): Promise<void> => {
     data: { apiKeyEnc: encryptSecret(apiKey) },
   });
   res.json({ ok: true });
+  clearResolveCache();
 });
 
 providersRouter.delete("/:id", async (req, res): Promise<void> => {
   const id = Number.parseInt(String(req.params["id"]), 10);
   await prisma.provider.delete({ where: { id } }).catch(() => undefined);
   res.json({ ok: true });
+  clearResolveCache();
 });
 
 /** Searchable model catalog: static starters + live /models per provider. */
@@ -115,4 +119,5 @@ providersRouter.put("/default-model", async (req, res): Promise<void> => {
     create: { key: "defaultModel", value: model },
   });
   res.json({ ok: true });
+  clearResolveCache();
 });

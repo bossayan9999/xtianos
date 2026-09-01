@@ -165,8 +165,24 @@ export interface ResolvedProvider {
   model: string;
 }
 
+// Short-TTL cache for provider resolution. resolveProvider can round-trip the
+// DB (and hit listModels) on every message; for a stable model spec the result
+// virtually never changes between requests, so memoize it briefly.
+const resolveCache = new Map<string, { value: ResolvedProvider; expiresAt: number }>();
+const RESOLVE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Invalidate the provider-resolution cache (call whenever providers/model change). */
+export function clearResolveCache(): void {
+  resolveCache.clear();
+}
+
 export async function resolveProvider(modelSpec: string | null): Promise<ResolvedProvider> {
-  const spec = modelSpec ?? (await prisma.setting.findUnique({ where: { key: "defaultModel" } }))?.value ?? null;
+  const rawSpec = modelSpec ?? (await prisma.setting.findUnique({ where: { key: "defaultModel" } }))?.value ?? null;
+  const cacheKey = rawSpec ? String(rawSpec) : "__default__";
+  const hit = resolveCache.get(cacheKey);
+  if (hit && Date.now() < hit.expiresAt) return hit.value;
+
+  const spec = rawSpec;
   const resolve = async (providerId: number, model: string): Promise<ResolvedProvider> => {
     const provider = await prisma.provider.findUnique({ where: { id: providerId } });
     if (!provider) throw new Error("configured provider no longer exists");
@@ -179,33 +195,48 @@ export async function resolveProvider(modelSpec: string | null): Promise<Resolve
     };
   };
 
+  let result: ResolvedProvider;
+
   // Provider-qualified spec (e.g. "2:claude-sonnet-4-6") -> use that provider.
   if (spec !== null && /^\d+:/.test(spec)) {
     const [providerId, model] = [
       Number.parseInt(spec.slice(0, spec.indexOf(":")), 10),
       spec.slice(spec.indexOf(":") + 1),
     ];
-    return resolve(providerId, model);
-  }
-
-  // Unqualified spec (e.g. a starter-catalog OpenCode model like
-  // "nemotron-3-ultra-free"). Route it to a configured provider that hosts
-  // that model and has a key; otherwise fall back to the first provider.
-  // Without this, picking a free OpenCode model would silently hit the
-  // first (possibly keyless) provider -> 401.
-  if (spec !== null) {
+    result = await resolve(providerId, model);
+  } else if (spec !== null) {
+    // Unqualified spec (e.g. a starter-catalog OpenCode model like
+    // "nemotron-3-ultra-free"). Route it to a configured provider that hosts
+    // that model and has a key; otherwise fall back to the first provider.
+    // Without this, picking a free OpenCode model would silently hit the
+    // first (possibly keyless) provider -> 401.
     const providers = await prisma.provider.findMany({ orderBy: { id: "asc" } });
+    let matched: ResolvedProvider | null = null;
     for (const p of providers) {
       if ((p.apiKeyEnc ?? "").length === 0) continue;
       const key = decryptSecret(p.apiKeyEnc);
       const live = await listModels(p.baseUrl, key).catch(() => [] as string[]);
-      if (live.includes(spec)) return resolve(p.id, spec);
+      if (live.includes(spec)) {
+        matched = await resolve(p.id, spec);
+        break;
+      }
     }
+    if (matched) {
+      result = matched;
+    } else {
+      const first = await prisma.provider.findFirst({ orderBy: { id: "asc" } });
+      if (!first) throw new Error("no AI provider configured — add one in Settings");
+      result = await resolve(first.id, spec ?? first.label);
+    }
+  } else {
+    const first = await prisma.provider.findFirst({ orderBy: { id: "asc" } });
+    if (!first) throw new Error("no AI provider configured — add one in Settings");
+    result = await resolve(first.id, spec ?? first.label);
   }
 
-  const first = await prisma.provider.findFirst({ orderBy: { id: "asc" } });
-  if (!first) throw new Error("no AI provider configured — add one in Settings");
-  return resolve(first.id, spec ?? first.label);
+  // Clear the cache when the underlying data changes.
+  resolveCache.set(cacheKey, { value: result, expiresAt: Date.now() + RESOLVE_CACHE_TTL_MS });
+  return result;
 }
 
 async function readBrainFile(rel: string): Promise<string | null> {
@@ -239,7 +270,8 @@ export function isChatStyle(value: unknown): value is ChatStyle {
 }
 
 const STYLE_DIRECTIVES: Record<ChatStyle, string> = {
-  balanced: "",
+  balanced:
+    "STYLE balanced — be concise and direct: lead with the answer in 1-3 tight sentences, then add only the detail that genuinely helps. No rambling, no boilerplate, no restating the question.",
   speed:
     "STYLE speed — zero-shot, get to the point, high signal. Reply in at most 1-3 short plain sentences with no preamble, no markdown headings, no numbered lists, no bullets, no bold lead-in, and no 'takeaway' line. Give the first correct answer directly; skip elaborating unless explicitly asked.",
   structured:
