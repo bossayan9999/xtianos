@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "firecrawl": {
+      "command": "npx",
+      "args": "-y firecrawl-mcp",
+      "enabled": true
+    }
+  }
+}
