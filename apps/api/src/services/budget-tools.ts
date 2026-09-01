@@ -155,7 +155,7 @@ export function budgetTools(): ToolDef[] {
     {
       name: "budget_transactions",
       description:
-        "List budized transactions, newest first. Optionally filter to a month (month 1-12 + year) — omit month/year for all transactions.",
+        "List budget transactions, newest first. Optionally filter to a month (month 1-12 + year) — omit month/year for all transactions.",
       scopes: ["read"],
       params: [
         { name: "month", type: "number", description: "1-12 to filter by month", required: false },
@@ -208,6 +208,156 @@ export function budgetTools(): ToolDef[] {
             balanceCents: a.balanceCents,
             isClosed: a.isClosed,
           })),
+          null,
+          2,
+        );
+      },
+    },
+    {
+      name: "budget_add_account",
+      description:
+        "Create a new budget account (e.g. checking, savings, credit, cash). Provide a name, type, and currency (PHP|USD|EUR|GBP|JPY|CAD|AUD|INR|SGD|AED — defaults to PHP). Optional starting balanceCents. Audited and requires prior human approval.",
+      scopes: ["exec"],
+      params: [
+        { name: "name", type: "string", description: "account name", required: true },
+        { name: "type", type: "string", description: "checking|savings|credit|cash", required: false },
+        { name: "currency", type: "string", description: "ISO code, e.g. PHP|USD|EUR", required: false },
+        { name: "balanceCents", type: "number", description: "starting balance in cents", required: false },
+      ],
+      run: async (args: Record<string, unknown>) => {
+        const name = str(args["name"]);
+        if (!name) return "ERROR name required";
+        let currency = str(args["currency"]) || "PHP";
+        if (!KNOWN_CURRENCIES.has(currency)) currency = "PHP";
+
+        await audit(
+          "tool:budget_add_account",
+          JSON.stringify({ name, type: str(args["type"]) || "checking", currency, balanceCents: cents(args["balanceCents"]) }).slice(0, 1500),
+        );
+
+        const account = await prisma.budgetAccount.create({
+          data: {
+            name,
+            type: str(args["type"]) || "checking",
+            currency,
+            balanceCents: cents(args["balanceCents"]),
+          },
+        });
+        return JSON.stringify(
+          { id: account.id, name: account.name, type: account.type, currency: account.currency, balanceCents: account.balanceCents },
+          null,
+          2,
+        );
+      },
+    },
+    {
+      name: "budget_add_category",
+      description:
+        "Create a new budget category (e.g. Groceries, Transport, Savings). Provide a name and type (income|expense|savings|debt — defaults to expense). Optional budgetCents monthly target and a hex color (#RRGGBB). Audited and requires prior human approval.",
+      scopes: ["exec"],
+      params: [
+        { name: "name", type: "string", description: "category name", required: true },
+        { name: "type", type: "string", description: "income|expense|savings|debt", required: false },
+        { name: "budgetCents", type: "number", description: "monthly budget target in cents", required: false },
+        { name: "color", type: "string", description: "hex color like #ffaa00", required: false },
+      ],
+      run: async (args: Record<string, unknown>) => {
+        const name = str(args["name"]);
+        if (!name) return "ERROR name required";
+
+        await audit(
+          "tool:budget_add_category",
+          JSON.stringify({ name, type: str(args["type"]) || "expense", budgetCents: cents(args["budgetCents"]) }).slice(0, 1500),
+        );
+
+        const category = await prisma.budgetCategory.create({
+          data: {
+            name,
+            type: str(args["type"]) || "expense",
+            budgetCents: cents(args["budgetCents"]),
+            color: optStr(args["color"]),
+          },
+        });
+        return JSON.stringify(
+          { id: category.id, name: category.name, type: category.type, budgetCents: category.budgetCents, color: category.color },
+          null,
+          2,
+        );
+      },
+    },
+    {
+      name: "budget_update_account",
+      description:
+        "Update an existing budget account (name, type, currency, balanceCents, isClosed). Provide the accountId and only the fields you want to change. Use for correcting a balance or closing/opening an account. Audited and requires prior human approval.",
+      scopes: ["exec"],
+      params: [
+        { name: "accountId", type: "number", description: "existing account id", required: true },
+        { name: "name", type: "string", description: "new account name", required: false },
+        { name: "type", type: "string", description: "checking|savings|credit|cash", required: false },
+        { name: "currency", type: "string", description: "ISO code", required: false },
+        { name: "balanceCents", type: "number", description: "new balance in cents", required: false },
+        { name: "isClosed", type: "boolean", description: "mark account closed/open", required: false },
+      ],
+      run: async (args: Record<string, unknown>) => {
+        const id = num(args["accountId"]);
+        if (!id) return "ERROR accountId required";
+        const existing = await prisma.budgetAccount.findUnique({ where: { id } });
+        if (!existing) return `ERROR no account with id ${id}`;
+        const data: Record<string, unknown> = {};
+        if (args["name"] !== undefined) data["name"] = str(args["name"]);
+        if (args["type"] !== undefined) data["type"] = str(args["type"]);
+        if (args["currency"] !== undefined) {
+          let input = str(args["currency"]);
+          if (!KNOWN_CURRENCIES.has(input)) input = "PHP";
+          data["currency"] = input;
+        }
+        if (args["balanceCents"] !== undefined) data["balanceCents"] = cents(args["balanceCents"]);
+        if (args["isClosed"] !== undefined) data["isClosed"] = Boolean(args["isClosed"]);
+
+        await audit(
+          "tool:budget_update_account",
+          JSON.stringify({ accountId: id, ...data }).slice(0, 1500),
+        );
+
+        const account = await prisma.budgetAccount.update({ where: { id }, data });
+        return JSON.stringify(
+          { id: account.id, name: account.name, type: account.type, currency: account.currency, balanceCents: account.balanceCents, isClosed: account.isClosed },
+          null,
+          2,
+        );
+      },
+    },
+    {
+      name: "budget_update_category",
+      description:
+        "Update an existing budget category (name, type, budgetCents, color). Provide the categoryId and only the fields you want to change. Audited and requires prior human approval.",
+      scopes: ["exec"],
+      params: [
+        { name: "categoryId", type: "number", description: "existing category id", required: true },
+        { name: "name", type: "string", description: "new category name", required: false },
+        { name: "type", type: "string", description: "income|expense|savings|debt", required: false },
+        { name: "budgetCents", type: "number", description: "new monthly budget in cents", required: false },
+        { name: "color", type: "string", description: "hex color like #ffaa00", required: false },
+      ],
+      run: async (args: Record<string, unknown>) => {
+        const id = num(args["categoryId"]);
+        if (!id) return "ERROR categoryId required";
+        const existing = await prisma.budgetCategory.findUnique({ where: { id } });
+        if (!existing) return `ERROR no category with id ${id}`;
+        const data: Record<string, unknown> = {};
+        if (args["name"] !== undefined) data["name"] = str(args["name"]);
+        if (args["type"] !== undefined) data["type"] = str(args["type"]);
+        if (args["budgetCents"] !== undefined) data["budgetCents"] = cents(args["budgetCents"]);
+        if (args["color"] !== undefined) data["color"] = optStr(args["color"]);
+
+        await audit(
+          "tool:budget_update_category",
+          JSON.stringify({ categoryId: id, ...data }).slice(0, 1500),
+        );
+
+        const category = await prisma.budgetCategory.update({ where: { id }, data });
+        return JSON.stringify(
+          { id: category.id, name: category.name, type: category.type, budgetCents: category.budgetCents, color: category.color },
           null,
           2,
         );
