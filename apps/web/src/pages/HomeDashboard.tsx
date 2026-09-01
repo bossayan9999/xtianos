@@ -73,9 +73,10 @@ const API = '/api'
 
 interface DashboardProps {
   compact?: boolean
+  onBudget?: () => void
 }
 
-export function HomeDashboard({ compact = false }: DashboardProps) {
+export function HomeDashboard({ compact = false, onBudget }: DashboardProps) {
   const [agents, setAgents] = useState<Agent[]>([])
   const [messages, setMessages] = useState<TunnelMessage[]>([])
   const [spinAngle, setSpinAngle] = useState(0)
@@ -213,6 +214,12 @@ export function HomeDashboard({ compact = false }: DashboardProps) {
         {/* ── Left panel: constellation + workflow ── */}
         <div className="dash-left panel">
           <h3 className="dash-panel-title">Agent Constellation</h3>
+
+          {onBudget && (
+            <button type="button" className="dash-budget-btn" onClick={onBudget}>
+              💰 Open Budget
+            </button>
+          )}
 
           <div className="dash-flow-head">
             <span className="flow-run-meta">

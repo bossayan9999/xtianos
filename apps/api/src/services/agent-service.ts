@@ -5,6 +5,7 @@ import type { ChatMessage } from "@xtiand/shared";
 import {
   ToolRegistry,
   builtinTools,
+  listModels,
   loadSkillManifest,
   listSkillDirs,
   readSkillBody,
@@ -16,6 +17,7 @@ import { decryptSecret, env } from "../lib/env";
 import { audit } from "../lib/auth";
 import { searchMemory } from "./memory";
 import { dashboardTools } from "./dashboard-tools";
+import { budgetTools } from "./budget-tools";
 import { orchestrateTools } from "./orchestrator";
 import { imageTool, imageReadTool } from "./image-tools";
 
@@ -49,6 +51,11 @@ export async function buildRegistry(conversationId: number | null): Promise<Tool
   }
 
   for (const tool of dashboardTools()) {
+    registry.register(tool);
+  }
+
+  // Budget system — read dashboard/transactions and (with approval) log entries.
+  for (const tool of budgetTools()) {
     registry.register(tool);
   }
 
@@ -160,25 +167,45 @@ export interface ResolvedProvider {
 
 export async function resolveProvider(modelSpec: string | null): Promise<ResolvedProvider> {
   const spec = modelSpec ?? (await prisma.setting.findUnique({ where: { key: "defaultModel" } }))?.value ?? null;
-  let providerId: number;
-  let model: string;
-  if (spec !== null && /^\d+:/.test(spec)) {
-    [providerId, model] = [Number.parseInt(spec.slice(0, spec.indexOf(":")), 10), spec.slice(spec.indexOf(":") + 1)];
-  } else {
-    const first = await prisma.provider.findFirst({ orderBy: { id: "asc" } });
-    if (!first) throw new Error("no AI provider configured — add one in Settings");
-    providerId = first.id;
-    model = spec ?? first.label;
-  }
-  const provider = await prisma.provider.findUnique({ where: { id: providerId } });
-  if (!provider) throw new Error("configured provider no longer exists");
-  return {
-    providerId,
-    kind: provider.kind === "anthropic" ? "anthropic" : "openai-compat",
-    baseUrl: provider.baseUrl,
-    apiKey: decryptSecret(provider.apiKeyEnc),
-    model,
+  const resolve = async (providerId: number, model: string): Promise<ResolvedProvider> => {
+    const provider = await prisma.provider.findUnique({ where: { id: providerId } });
+    if (!provider) throw new Error("configured provider no longer exists");
+    return {
+      providerId,
+      kind: provider.kind === "anthropic" ? "anthropic" : "openai-compat",
+      baseUrl: provider.baseUrl,
+      apiKey: decryptSecret(provider.apiKeyEnc),
+      model,
+    };
   };
+
+  // Provider-qualified spec (e.g. "2:claude-sonnet-4-6") -> use that provider.
+  if (spec !== null && /^\d+:/.test(spec)) {
+    const [providerId, model] = [
+      Number.parseInt(spec.slice(0, spec.indexOf(":")), 10),
+      spec.slice(spec.indexOf(":") + 1),
+    ];
+    return resolve(providerId, model);
+  }
+
+  // Unqualified spec (e.g. a starter-catalog OpenCode model like
+  // "nemotron-3-ultra-free"). Route it to a configured provider that hosts
+  // that model and has a key; otherwise fall back to the first provider.
+  // Without this, picking a free OpenCode model would silently hit the
+  // first (possibly keyless) provider -> 401.
+  if (spec !== null) {
+    const providers = await prisma.provider.findMany({ orderBy: { id: "asc" } });
+    for (const p of providers) {
+      if ((p.apiKeyEnc ?? "").length === 0) continue;
+      const key = decryptSecret(p.apiKeyEnc);
+      const live = await listModels(p.baseUrl, key).catch(() => [] as string[]);
+      if (live.includes(spec)) return resolve(p.id, spec);
+    }
+  }
+
+  const first = await prisma.provider.findFirst({ orderBy: { id: "asc" } });
+  if (!first) throw new Error("no AI provider configured — add one in Settings");
+  return resolve(first.id, spec ?? first.label);
 }
 
 async function readBrainFile(rel: string): Promise<string | null> {

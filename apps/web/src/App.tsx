@@ -5,6 +5,7 @@ import { HomePage } from './pages/HomePage'
 import { BrainPage } from './pages/BrainPage'
 import { CodePage } from './pages/CodePage'
 import { ProjectsPage } from './pages/ProjectsPage'
+import { BudgetPage } from './pages/BudgetPage'
 import { SkillsPage } from './pages/SkillsPage'
 import { StudioPage } from './pages/StudioPage'
 import { TerminalPage } from './pages/TerminalPage'
@@ -21,6 +22,7 @@ const TABS = [
   { id: 'brain', label: '🧠 Brain', el: BrainPage },
   { id: 'code', label: '🔬 Code', el: CodePage },
   { id: 'projects', label: '📋 Projects', el: ProjectsPage },
+  { id: 'budget', label: '💰 Budget', el: BudgetPage },
   { id: 'skills', label: '🧩 Skills & MCP', el: SkillsPage },
   { id: 'studio', label: '🎨 Studio', el: StudioPage },
   { id: 'terminal', label: '⌨️ Terminal', el: TerminalPage },
@@ -71,7 +73,11 @@ export default function App() {
         </nav>
         <span className="updated">mjane copilot manager · v0.1</span>      </header>
       <main className="page">
-        <Active />
+        {tab === 'home' ? (
+          <HomePage onNavigate={(id) => setTab(id as (typeof TABS)[number]['id'])} />
+        ) : (
+          <Active />
+        )}
       </main>
     </div>
   )

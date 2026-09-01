@@ -19,6 +19,7 @@ import { tunnelRouter } from "./routes/tunnel";
 import { agentsRouter } from "./routes/agents";
 import { qualityRouter } from "./routes/quality";
 import { housekeepingRouter } from "./routes/housekeeping";
+import { budgetRouter } from "./routes/budget";
 import { ensureSkillsRoot } from "./services/agent-service";
 import { startHousekeeper } from "./services/housekeeper";
 import { promises as fsp, existsSync } from "node:fs";
@@ -54,6 +55,7 @@ app.use("/api/tunnel", tunnelRouter);
 app.use("/api/agents", agentsRouter);
 app.use("/api/quality", qualityRouter);
 app.use("/api/housekeeping", housekeepingRouter);
+app.use("/api/budget", budgetRouter);
 
 // route ordering note: /api/quality is versioned via /api/quality/... only
 

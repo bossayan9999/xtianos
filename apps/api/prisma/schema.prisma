@@ -220,3 +220,53 @@ model RecoveryToken {
 
   @@index([userId])
 }
+
+// ── Budget (personal finance) ────────────────────────────────────────────
+
+model BudgetAccount {
+  id            Int                 @id @default(autoincrement())
+  name          String
+  type          String              @default("checking") // checking | savings | credit | cash
+  currency      String              @default("PHP")      // ISO code, e.g. PHP | USD | EUR
+  balanceCents  Int                 @default(0)
+  isClosed      Boolean             @default(false)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  transactions  BudgetTransaction[]
+}
+
+// Singleton row (id = 1): base/display currency + optional conversion rates
+model BudgetSetting {
+  id           Int      @id
+  baseCurrency String   @default("PHP")
+  // JSON map { "USD": 56.0, "EUR": 62.0, ... } = how many base units one of that currency buys
+  rates        Json
+  updatedAt    DateTime @updatedAt
+}
+
+model BudgetCategory {
+  id           Int                 @id @default(autoincrement())
+  name         String
+  type         String              @default("expense") // income | expense | savings | debt
+  budgetCents  Int                 @default(0)          // monthly target (for expense/savings)
+  color        String? 
+  createdAt    DateTime            @default(now())
+  transactions BudgetTransaction[]
+}
+
+model BudgetTransaction {
+  id          Int             @id @default(autoincrement())
+  accountId   Int
+  categoryId  Int?
+  amountCents Int              // positive = income, negative = expense
+  date        DateTime        @default(now())
+  description String
+  payee       String?
+  createdAt   DateTime        @default(now())
+  account     BudgetAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  category    BudgetCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([accountId])
+  @@index([categoryId])
+  @@index([date])
+}

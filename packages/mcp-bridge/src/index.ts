@@ -237,6 +237,11 @@ export class McpStdioClient implements McpClientLike {
       this.child = spawn(command, args, {
         env: { ...process.env, ...extraEnv },
         stdio: ["pipe", "pipe", "pipe"],
+        // Windows can't spawn .cmd/.bat shims without a shell, and passing an
+        // absolute path with spaces as the command breaks under the shell.
+        // Spawn the bare command through cmd.exe on Windows so it resolves the
+        // shim (e.g. npx.cmd) from PATH itself. Other platforms are unchanged.
+        shell: process.platform === "win32",
       });
       this.child.stdout?.setEncoding("utf8");
       this.child.stdout?.on("data", (chunk: string) => {
@@ -261,7 +266,7 @@ export class McpStdioClient implements McpClientLike {
       });
       this.child.stderr?.on("data", () => undefined);
       this.child.on("error", rejectPromise);
-      setTimeout(resolvePromise, 300);
+      setTimeout(resolvePromise, process.platform === "win32" ? 3000 : 300);
     });
   }
 }

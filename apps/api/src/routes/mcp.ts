@@ -95,7 +95,6 @@ function specFor(server: {
   };
 }
 
-/** Probe an enabled server: connect + list tools/resources/prompts + read a sample of each. */
 mcpRouter.post("/servers/:id/probe", async (req, res): Promise<void> => {
   const id = Number.parseInt(String(req.params["id"]), 10);
   const server = await prisma.mcpServer.findUnique({ where: { id } }).catch(() => null);
@@ -121,6 +120,28 @@ mcpRouter.post("/servers/:id/probe", async (req, res): Promise<void> => {
     res.status(502).json({
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    client.dispose();
+  }
+});
+
+mcpRouter.post("/servers/:id/connect-check", async (req, res): Promise<void> => {
+  const id = Number.parseInt(String(req.params["id"]), 10);
+  const server = await prisma.mcpServer.findUnique({ where: { id } }).catch(() => null);
+  if (!server) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  const client = createMcpClient(specFor(server));
+  try {
+    await client.connect(specFor(server));
+    res.json({ ok: true, transport: server.transport, message: "Connection successful" });
+  } catch (error: unknown) {
+    res.status(502).json({
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      message: "Connection failed",
     });
   } finally {
     client.dispose();

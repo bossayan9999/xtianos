@@ -3,13 +3,17 @@ import { ChatPage } from './ChatPage'
 import { HomeDashboard } from './HomeDashboard'
 import { MissionTerminal } from '../components/MissionTerminal'
 
+interface HomePageProps {
+  onNavigate?: (tabId: string) => void
+}
+
 /**
  * Combined landing tab: mjane chat as the main area with a toggleable
  * dashboard panel (agent constellation + live data flow) on the right,
  * and a live terminal showing what mjane + agents are doing (with user
  * terminals connected to the desktop host).
  */
-export function HomePage() {
+export function HomePage({ onNavigate }: HomePageProps) {
   const [showDash, setShowDash] = useState(true)
   const [showTerm, setShowTerm] = useState(true)
 
@@ -37,6 +41,13 @@ export function HomePage() {
         >
           ⌨️ Terminal
         </button>
+        <button
+          type="button"
+          className="home-toggle budget"
+          onClick={() => onNavigate?.('budget')}
+        >
+          💰 Budget
+        </button>
         <span className="home-hint">talk to mjane · watch agents delegate · live code + desktop terminals</span>
       </div>
 
@@ -46,7 +57,7 @@ export function HomePage() {
         </div>
         {showDash && (
           <div className="home-dash">
-            <HomeDashboard compact />
+            <HomeDashboard compact onBudget={() => onNavigate?.('budget')} />
           </div>
         )}
       </div>
