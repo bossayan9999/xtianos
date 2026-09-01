@@ -1,6 +1,6 @@
 {
   "name": "xtiand-os",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "xtiandOS — agentic home-lab web OS with the mjane copilot",
   "private": true,
   "type": "commonjs",
@@ -16,16 +16,51 @@
     "serve:prod": "caddy run --config deploy/Caddyfile",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
-    "db:push": "npm run db:push -w apps/api"
+    "test": "npm run test --workspaces --if-present && vitest run",
+    "test:smoke": "vitest run --grep 'Smoke Tests'",
+    "test:functional": "vitest run --grep 'Functional Tests'",
+    "test:integration": "vitest run --grep 'Integration Tests'",
+    "test:security": "vitest run --grep 'Security Tests'",
+    "test:load": "vitest run --grep 'Load Tests'",
+    "test:ui": "vitest run --grep 'UI'",
+    "test:all": "bash scripts/run-all-tests.sh",
+    "db:push": "npm run db:push -w apps/api",
+    "docker:build": "docker build -f Dockerfile.prod -t xtiandos:latest .",
+    "docker:up": "docker-compose -f docker-compose.prod.yml up -d",
+    "docker:down": "docker-compose -f docker-compose.prod.yml down",
+    "k8s:apply": "kubectl apply -f k8s/",
+    "k8s:delete": "kubectl delete -f k8s/",
+    "k8s:status": "kubectl get all -l app=xtiandos"
   },
-  "keywords": ["ai", "agent", "copilot", "homelab"],
-  "author": "",
+  "keywords": [
+    "ai",
+    "agent",
+    "copilot",
+    "homelab",
+    "mcp",
+    "obsidian"
+  ],
+  "author": "bossayan9999",
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "@vitest/ui": "^1.0.0",
+    "autocannon": "^7.10.0",
+    "node-fetch": "^3.3.2",
     "tsx": "^4.20.3",
-    "typescript": "~6.0.2"
+    "typescript": "~6.0.2",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.7.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.42.1",
+    "@opentelemetry/core": "^1.17.0",
+    "@opentelemetry/exporter-jaeger": "^1.17.0",
+    "@opentelemetry/node": "^0.42.1",
+    "@opentelemetry/propagator-b3": "^0.42.1",
+    "@opentelemetry/sdk-trace-node": "^0.42.1",
+    "ioredis": "^5.3.2",
+    "prom-client": "^15.0.0"
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true,
