@@ -94,7 +94,13 @@ export function detectResponseStyle(content: string): ChatStyle {
 
 export function ChatPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
-  const [activeId, setActiveId] = useState<number | null>(null)
+  const [activeId, setActiveId] = useState<number | null>(() => {
+    const saved = localStorage.getItem('xt.activeConversation')
+    const n = saved === null ? NaN : Number(saved)
+    if (Number.isInteger(n) && n > 0) return n
+    localStorage.removeItem('xt.activeConversation')
+    return null
+  })
   const [messages, setMessages] = useState<ChatMessageView[]>([])
   const [input, setInput] = useState('')
   const [modelSpec, setModelSpec] = useState<string | null>(null)
@@ -162,6 +168,16 @@ export function ChatPage() {
         }))),
       )
       .catch(() => undefined)
+  }, [activeId])
+
+  // Keep the active conversation persisted so switching tabs (which unmounts
+  // this page) doesn't lose your place. Clearing to null wipes the saved one.
+  useEffect(() => {
+    if (activeId === null) {
+      localStorage.removeItem('xt.activeConversation')
+    } else {
+      localStorage.setItem('xt.activeConversation', String(activeId))
+    }
   }, [activeId])
 
   useEffect(() => {
