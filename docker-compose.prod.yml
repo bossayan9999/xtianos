@@ -1,0 +1,79 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: xtiandos
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_DB: xtiandos
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xtiandos"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    environment:
+      DATABASE_URL: postgresql://xtiandos:${DB_PASSWORD:-changeme}@postgres:5432/xtiandos
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PORT: 3101
+      BIND: 0.0.0.0
+      VAULT_PATH: /app/vault
+      MASTER_SECRET: ${MASTER_SECRET:-change-me-in-production}
+      AUTH_TOKEN: ${AUTH_TOKEN:-}
+    ports:
+      - "3101:3101"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./vault:/app/vault
+      - ./workspace:/app/workspace
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3101/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    ports:
+      - "5174:5174"
+    depends_on:
+      - api
+    environment:
+      VITE_API_URL: http://api:3101
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: xtiandos-network

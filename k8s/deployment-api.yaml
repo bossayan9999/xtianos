@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xtiandos-api
+  namespace: default
+  labels:
+    app: xtiandos
+    component: api
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: xtiandos
+      component: api
+  template:
+    metadata:
+      labels:
+        app: xtiandos
+        component: api
+    spec:
+      serviceAccountName: xtiandos
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+      - name: api
+        image: xtiandos:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 3101
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: xtiandos-secrets
+              key: database-url
+        - name: REDIS_HOST
+          value: xtiandos-redis
+        - name: REDIS_PORT
+          value: "6379"
+        - name: MASTER_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: xtiandos-secrets
+              key: master-secret
+        - name: AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: xtiandos-secrets
+              key: auth-token
+        - name: VAULT_PATH
+          value: /data/vault
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3101
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3101
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: vault
+          mountPath: /data/vault
+        - name: workspace
+          mountPath: /app/workspace
+      volumes:
+      - name: vault
+        persistentVolumeClaim:
+          claimName: xtiandos-vault-pvc
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: xtiandos-workspace-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xtiandos-api
+  namespace: default
+  labels:
+    app: xtiandos
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 3101
+    protocol: TCP
+    name: http
+  selector:
+    app: xtiandos
+    component: api
+---
+apiVersion: autoscaling.k8s.io/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: xtiandos-api-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: xtiandos-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
