@@ -20,7 +20,7 @@
     "better-sqlite3": "^12.4.1",
     "dockerode": "^4.0.2",
     "dotenv": "^17.2.1",
-    "express": "^4.21.2",
+    "express": "^5.2.1",
     "prisma": "^7.9.1",
     "sqlite-vec": "^0.1.9"
   },
