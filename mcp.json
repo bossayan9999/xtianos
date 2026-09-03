@@ -4,6 +4,11 @@
       "command": "npx",
       "args": "-y firecrawl-mcp",
       "enabled": true
+    },
+    "desktop-commander": {
+      "command": "npx",
+      "args": "-y @wonderwhy-er/desktop-commander@latest --no-onboarding",
+      "enabled": true
     }
   }
 }
